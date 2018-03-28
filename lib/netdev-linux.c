@@ -47,6 +47,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <math.h>
 
 #include "coverage.h"
 #include "dp-packet.h"
@@ -536,7 +537,15 @@ struct netdev_rxq_linux {
 #define DATA_HEADROOM 0
 #define FRAME_SIZE 2048
 #define NUM_DESCS 1024
-#define DEBUG_HEXDUMP 0
+#define DEBUG_HEXDUMP 1
+
+#define lassert(expr)                                                   \
+        do {                                                            \
+                if (!(expr)) {                                          \
+                        fprintf(stderr, "%s:%s:%i: Assertion failed: " #expr ": errno: %d/\"%s\"\n", __FILE__, __func__, __LINE__, errno, strerror(errno)); \
+                        exit(EXIT_FAILURE);                             \
+                }                                                       \
+        } while (0)
 
 struct xdp_umem {
         char *buffer;
@@ -977,7 +986,10 @@ xsk_configure(struct netdev_rxq_linux *rx, int ifindex, int queue_id)
     int sfd, ret, i;
 
     sfd = socket(PF_XDP, SOCK_RAW, 0);
-    ovs_assert(sfd >= 0);
+	if (sfd < 0) {
+		VLOG_ERR("socket %s", ovs_strerror(errno));
+		ovs_assert(0);
+	}
 
     xqp = xcalloc(1, sizeof(*xqp));
     xqp->sfd = sfd;
@@ -988,10 +1000,16 @@ xsk_configure(struct netdev_rxq_linux *rx, int ifindex, int queue_id)
 	req.desc_nr = NUM_DESCS;	
 
 	ret = setsockopt(sfd, SOL_XDP, XDP_RX_RING, &req, sizeof(req));
-	ovs_assert(ret == 0);
+	if (ret != 0) {
+		VLOG_ERR("set rx ring %s", ovs_strerror(errno));
+		ovs_assert(0);
+	}
 
 	ret = setsockopt(sfd, SOL_XDP, XDP_TX_RING, &req, sizeof(req));
-	ovs_assert(ret == 0);
+	if (ret != 0) {
+		VLOG_ERR("set tx ring %s", ovs_strerror(errno));
+		ovs_assert(0);
+	}
 
 	/* RX */
 	VLOG_INFO("%s: setup rx desc", __func__);
@@ -1027,7 +1045,10 @@ xsk_configure(struct netdev_rxq_linux *rx, int ifindex, int queue_id)
 
 	VLOG_INFO("%s: bind xdp socket", __func__);
 	ret = bind(sfd, (struct sockaddr *)&sxdp, sizeof(sxdp));
-	ovs_assert(ret == 0);
+	if (ret != 0) {
+		VLOG_ERR("bind xdp sock %s", ovs_strerror(errno));
+		ovs_assert(0);
+	}
 
 	rx->fd = sfd;
 	rx->xqp = xqp;
@@ -1047,7 +1068,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     if (rx->is_tap) {
         rx->fd = netdev->tap_fd;
     } else {
-        int ifindex, val;
+        int ifindex;
         int queue_id = 11; /* FIXME */
 
 		/* Get ethernet device index. */
@@ -1125,7 +1146,7 @@ static void hex_dump(void *pkt, size_t length, const char *prefix)
         size_t line_size = 32; 
         unsigned char c;
 
-        printf("length = %u\n", length);
+        printf("length = %lu\n", length);
         printf("%s | ", prefix);
         while (length-- > 0) {
                 printf("%02X ", *address++);
@@ -1248,7 +1269,7 @@ static inline void *xq_get_data(struct xdp_queue_pair *q, __u32 idx, __u32 off)
 
 /* see rx_drop */
 static int
-netdev_linux_rxq_recv_xdpsock(int fd, struct xdp_queue_pair *xqp,
+netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
                               struct dp_packet_batch *batch)
 {
 
@@ -1266,7 +1287,6 @@ netdev_linux_rxq_recv_xdpsock(int fd, struct xdp_queue_pair *xqp,
     for (i = 0; i < rcvd; i++) {
         unsigned int idx = descs[i].idx;
         struct dp_packet *packet;
-
         char *data;
         char buf[32];
 
@@ -1278,12 +1298,13 @@ netdev_linux_rxq_recv_xdpsock(int fd, struct xdp_queue_pair *xqp,
      
 #if DEBUG_HEXDUMP
         sprintf(buf, "idx=%d", idx);
-        hex_dump(pkt, descs[i].len, buf);
+        hex_dump(data, descs[i].len, buf);
 #endif
     }
 
     ret = xq_enq(&xqp->rx, descs, rcvd);
     ovs_assert(ret == 0);
+	return 0;
 }
 
 static int
@@ -1391,7 +1412,7 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
                                            DP_NETDEV_HEADROOM);
     retval = (rx->is_tap
               ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
-              : netdev_linux_rxq_recv_xdpsock(rx->fd, rx->xqp, batch));
+              : netdev_linux_rxq_recv_xdpsock(rx->xqp, batch));
               //: netdev_linux_rxq_recv_sock(rx->fd, buffer));
     if (retval) {
         if (retval != EAGAIN && retval != EMSGSIZE) {
