@@ -539,14 +539,6 @@ struct netdev_rxq_linux {
 #define NUM_DESCS 1024
 #define DEBUG_HEXDUMP 1
 
-#define lassert(expr)                                                   \
-        do {                                                            \
-                if (!(expr)) {                                          \
-                        fprintf(stderr, "%s:%s:%i: Assertion failed: " #expr ": errno: %d/\"%s\"\n", __FILE__, __func__, __LINE__, errno, strerror(errno)); \
-                        exit(EXIT_FAILURE);                             \
-                }                                                       \
-        } while (0)
-
 struct xdp_umem {
         char *buffer;
         size_t size;
