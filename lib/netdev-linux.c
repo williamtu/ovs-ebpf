@@ -537,7 +537,7 @@ struct netdev_rxq_linux {
 #define DATA_HEADROOM 0
 #define FRAME_SIZE 2048
 #define NUM_DESCS 1024
-#define DEBUG_HEXDUMP 1
+#define DEBUG_HEXDUMP 0
 
 struct xdp_umem {
         char *buffer;
@@ -1138,26 +1138,26 @@ static void hex_dump(void *pkt, size_t length, const char *prefix)
         size_t line_size = 32; 
         unsigned char c;
 
-        printf("length = %lu\n", length);
-        printf("%s | ", prefix);
+        VLOG_INFO("length = %lu\n", length);
+        VLOG_INFO("%s | ", prefix);
         while (length-- > 0) {
-                printf("%02X ", *address++);
+                VLOG_INFO("%02X ", *address++);
                 if (!(++i % line_size) || (length == 0 && i % line_size)) {
                         if (length == 0) {
                                 while (i++ % line_size)
-                                        printf("__ ");
+                                        VLOG_INFO("__ ");
                         }
-                        printf(" | ");  /* right close */
+                        VLOG_INFO(" | ");  /* right close */
                         while (line < address) {
                                 c = *line++;
-                                printf("%c", (c < 33 || c == 255) ? 0x2E : c); 
+                                VLOG_INFO("%c", (c < 33 || c == 255) ? 0x2E : c); 
                         }
-                        printf("\n");
+                        VLOG_INFO("\n");
                         if (length > 0)
-                                printf("%s | ", prefix);
+                                VLOG_INFO("%s | ", prefix);
                 }
         }
-        printf("\n");
+        VLOG_INFO("\n");
 }
 #endif
 
@@ -1171,7 +1171,12 @@ xsk_alloc_and_mem_reg_buffers(int sfd, size_t nbuffers)
     void *bufs;
     int ret;
 
-    bufs = xmalloc_cacheline(nbuffers * req.frame_size);
+    VLOG_INFO("%s sfd %d nbuffers %lu", __func__, sfd, nbuffers);
+
+    //bufs = xmalloc_cacheline(nbuffers * req.frame_size);
+    ret = posix_memalign((void **)&bufs, getpagesize(),
+                 nbuffers * req.frame_size);
+    ovs_assert(ret == 0);
 
     umem = xcalloc(1, sizeof(*umem));
     req.addr = (unsigned long)bufs;
@@ -1179,7 +1184,10 @@ xsk_alloc_and_mem_reg_buffers(int sfd, size_t nbuffers)
 
     /* register this umem */
     ret = setsockopt(sfd, SOL_XDP, XDP_MEM_REG, &req, sizeof(req));
-    ovs_assert(ret == 0);
+    if (ret) {
+        VLOG_ERR("setsockopt for XDP_MEM_REG %s", ovs_strerror(errno));
+        ovs_assert(0);
+    }
 
 	umem->frame_size = FRAME_SIZE;
     umem->frame_size_log2 = log2(FRAME_SIZE);
@@ -1271,10 +1279,14 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
 
     /* de-queue the packet from rx ring */
     rcvd = xq_deq(&xqp->rx, descs, NETDEV_MAX_BURST);
-    if (rcvd > 0)
+    if (rcvd == 0) {
+        VLOG_INFO_RL(&rl, "no packet");
         return 0;
+    }
 
     dp_packet_batch_init(batch);
+
+    VLOG_INFO_RL(&rl, "%s receive %d packets", __func__, rcvd);
 
     for (i = 0; i < rcvd; i++) {
         unsigned int idx = descs[i].idx;
@@ -1412,9 +1424,10 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
                          netdev_rxq_get_name(rxq_), ovs_strerror(errno));
         }
         dp_packet_delete(buffer);
-    } else {
-        dp_packet_batch_init_packet(batch, buffer);
     }
+    // else {
+    //    dp_packet_batch_init_packet(batch, buffer);
+    //}
 
     return retval;
 }
