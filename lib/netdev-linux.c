@@ -507,13 +507,14 @@ struct netdev_linux {
     int tap_fd;
     bool present;               /* If the device is present in the namespace */
     uint64_t tx_dropped;        /* tap device can drop if the iface is down */
+	struct xdp_queue_pair *xqp;
+    int fd;
 };
 
 struct netdev_rxq_linux {
     struct netdev_rxq up;
     bool is_tap;
     int fd;
-	struct xdp_queue_pair *xqp;
 };
 
 /* AF_XDP headers */
@@ -533,10 +534,12 @@ struct netdev_rxq_linux {
 #define PF_XDP AF_XDP
 #endif
 
-#define NUM_BUFFERS 131072
+//#define NUM_BUFFERS 131072
+#define NUM_BUFFERS 65536
 #define DATA_HEADROOM 0
 #define FRAME_SIZE 2048
-#define NUM_DESCS 1024
+//#define NUM_DESCS 1024
+#define NUM_DESCS 256
 #define DEBUG_HEXDUMP 0
 
 struct xdp_umem {
@@ -970,7 +973,7 @@ netdev_linux_rxq_alloc(void)
 }
 
 static int 
-xsk_configure(struct netdev_rxq_linux *rx, int ifindex, int queue_id)
+xsk_configure(struct netdev_linux *rx, struct netdev_rxq_linux *rxq_, int ifindex, int queue_id)
 {
     struct xdp_queue_pair *xqp;
     struct sockaddr_xdp sxdp;
@@ -1042,7 +1045,7 @@ xsk_configure(struct netdev_rxq_linux *rx, int ifindex, int queue_id)
 		ovs_assert(0);
 	}
 
-	rx->fd = sfd;
+	rxq_->fd = sfd;
 	rx->xqp = xqp;
 	return 0;
 }
@@ -1061,7 +1064,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         rx->fd = netdev->tap_fd;
     } else {
         int ifindex;
-        int queue_id = 11; /* FIXME */
+        int queue_id = 1; /* FIXME */
 
 		/* Get ethernet device index. */
         error = get_ifindex(&netdev->up, &ifindex);
@@ -1075,7 +1078,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
 				   __func__, netdev_->name, queue_id);
 
 		/* This configure both rx and tx */
-		xsk_configure(rx, ifindex, queue_id);
+		xsk_configure(netdev, rx, ifindex, queue_id);
     }
     ovs_mutex_unlock(&netdev->mutex);
 
@@ -1272,7 +1275,6 @@ static int
 netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
                               struct dp_packet_batch *batch)
 {
-
     struct xdp_desc descs[NETDEV_MAX_BURST];
     unsigned int rcvd, i;
     int ret;
@@ -1284,18 +1286,18 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
         return 0;
     }
 
-    dp_packet_batch_init(batch);
+    //dp_packet_batch_init(batch);
 
-    VLOG_INFO_RL(&rl, "%s receive %d packets", __func__, rcvd);
+    //VLOG_INFO_RL(&rl, "%s receive %d packets", __func__, rcvd);
 
     for (i = 0; i < rcvd; i++) {
         unsigned int idx = descs[i].idx;
         struct dp_packet *packet;
         char *data;
-        char buf[32];
 
-        ovs_assert(idx < NUM_BUFFERS);
+        //ovs_assert(idx < NUM_BUFFERS);
         data = xq_get_data(xqp, idx, descs[i].offset);
+//        dp_packet_use(packet, data, descs[i].len);
         packet = dp_packet_clone_data_with_headroom(data, descs[i].len,
                                                     DP_NETDEV_HEADROOM);
         dp_packet_batch_add(batch, packet);
@@ -1305,6 +1307,7 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
         hex_dump(data, descs[i].len, buf);
 #endif
     }
+    dp_packet_batch_init_packet_fields(batch);
 
     ret = xq_enq(&xqp->rx, descs, rcvd);
     ovs_assert(ret == 0);
@@ -1403,6 +1406,8 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
 {
     struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
     struct netdev *netdev = rx->up.netdev;
+    struct netdev_linux *ndl = netdev_linux_cast(netdev);
+
     struct dp_packet *buffer;
     ssize_t retval;
     int mtu;
@@ -1416,7 +1421,7 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
                                            DP_NETDEV_HEADROOM);
     retval = (rx->is_tap
               ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
-              : netdev_linux_rxq_recv_xdpsock(rx->xqp, batch));
+              : netdev_linux_rxq_recv_xdpsock(ndl->xqp, batch));
               //: netdev_linux_rxq_recv_sock(rx->fd, buffer));
     if (retval) {
         if (retval != EAGAIN && retval != EMSGSIZE) {
@@ -1547,6 +1552,38 @@ netdev_linux_tap_batch_send(struct netdev *netdev_,
     return 0;
 }
 
+static int
+netdev_linux_sock_xdp_send(struct netdev_linux *netdev,
+                           struct dp_packet_batch *batch)
+{
+#if 0
+    int ret; 
+    unsigned int frame_num;
+    int nframes;
+    struct dp_packet *packet;
+    struct xdp_desc descs[NETDEV_MAX_BURST];
+
+    struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
+    struct netdev *netdev = rx->up.netdev;
+
+    VLOG_WARN_RL(&rl, "%s num_pkt to send %lu", __func__, batch->count);
+
+    if (xqp->tx.num_free < NETDEV_MAX_BURST)
+        ovs_assert(0);
+
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+
+    }
+
+    ret = sendto(netdev->tx_fd, NULL, 0, 0, NULL, 0);
+    if (ret == -1) {
+        VLOG_INFO("%s", ovs_strerror(errno));
+    }
+#endif
+    VLOG_WARN("done");
+    return 0;
+}
+
 /* Sends 'batch' on 'netdev'.  Returns 0 if successful, otherwise a positive
  * errno value.  Returns EAGAIN without blocking if the packet cannot be queued
  * immediately.  Returns EMSGSIZE if a partial packet was transmitted or if
@@ -1576,6 +1613,7 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
         }
 
         error = netdev_linux_sock_batch_send(sock, ifindex, batch);
+        //error = netdev_linux_sock_xdp_send(netdev, batch);
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
