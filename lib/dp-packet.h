@@ -20,6 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <linux/if_xdp.h> //AF_XDP
+
 #ifdef DPDK_NETDEV
 #include <rte_config.h>
 #include <rte_mbuf.h>
@@ -42,6 +44,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
+    DPBUF_AFXDP,
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
@@ -61,6 +64,8 @@ struct dp_packet {
     uint32_t rss_hash;          /* Packet hash. */
     bool rss_hash_valid;        /* Is the 'rss_hash' valid? */
 #endif
+    uint32_t idx;               /* af xdp idx */
+    struct xdp_queue_pair *xqp;
     enum dp_packet_source source;  /* Source of memory allocated as 'base'. */
 
     /* All the following elements of this struct are copied in a single call
@@ -174,7 +179,14 @@ dp_packet_delete(struct dp_packet *b)
             free_dpdk_buf((struct dp_packet*) b);
             return;
         }
-
+        if (b->source == DPBUF_AFXDP) {
+            // done, put the desc back to mempool
+    	    //struct xdp_desc desc = {.idx = b->idx};
+            //int ret = xq_enq(&b->xqp->rx, &desc, 1);
+            //ovs_assert(ret == 0);
+            //free(b)?
+            return;
+        }
         dp_packet_uninit(b);
         free(b);
     }
@@ -695,6 +707,7 @@ enum { NETDEV_MAX_BURST = 32 }; /* Maximum number packets in a batch. */
 
 struct dp_packet_batch {
     size_t count;
+    size_t idx; //XDP sock
     bool trunc; /* true if the batch needs truncate. */
     struct dp_packet *packets[NETDEV_MAX_BURST];
 };

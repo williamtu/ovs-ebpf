@@ -27,7 +27,7 @@
 #include <linux/filter.h>
 #include <linux/gen_stats.h>
 #include <linux/if_ether.h>
-#include <linux/if_xdp.h>
+#include <linux/if_xdp.h> //AF_XDP
 #include <linux/if_tun.h>
 #include <linux/types.h>
 #include <linux/ethtool.h>
@@ -563,6 +563,25 @@ xsk_alloc_and_mem_reg_buffers(int sfd, size_t nbuffers);
 static inline int xq_enq(struct xdp_queue *q,
                          const struct xdp_desc *descs,
                          unsigned int ndescs);
+/*
++struct xdp_desc {
++   __u32 idx; 
++   __u32 len; 
++   __u16 offset;
++   __u8  error;
++   __u8  flags;
++   __u8  padding[4];
++};
++
++struct xdp_queue {
++   struct xdp_desc *ring;
++
++   __u32 avail_idx;
++   __u32 last_used_idx;
++   __u32 num_free;
++   __u32 ring_mask;
++};
+*/
 
 /* This is set pretty low because we probably won't learn anything from the
  * additional log messages. */
@@ -1277,7 +1296,7 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
 {
     struct xdp_desc descs[NETDEV_MAX_BURST];
     unsigned int rcvd, i;
-    int ret;
+    int ret = 0;
 
     /* de-queue the packet from rx ring */
     rcvd = xq_deq(&xqp->rx, descs, NETDEV_MAX_BURST);
@@ -1287,8 +1306,8 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
     }
 
     //dp_packet_batch_init(batch);
-
-    //VLOG_INFO_RL(&rl, "%s receive %d packets", __func__, rcvd);
+    VLOG_INFO_RL(&rl, "%s receive %d packets, starting idx %u",
+                 __func__, rcvd, descs[i].idx);
 
     for (i = 0; i < rcvd; i++) {
         unsigned int idx = descs[i].idx;
@@ -1297,9 +1316,17 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
 
         //ovs_assert(idx < NUM_BUFFERS);
         data = xq_get_data(xqp, idx, descs[i].offset);
+
+        // no copy
+        packet = xmalloc(sizeof(*packet));
+        dp_packet_use(packet, data, descs[i].len);
+        packet->source = DPBUF_AFXDP; 
+        packet->idx = idx; // so we know later what to enq 
+        packet->xqp = xqp;
+
 //        dp_packet_use(packet, data, descs[i].len);
-        packet = dp_packet_clone_data_with_headroom(data, descs[i].len,
-                                                    DP_NETDEV_HEADROOM);
+//        packet = dp_packet_clone_data_with_headroom(data, descs[i].len,
+//                                                    DP_NETDEV_HEADROOM);
         dp_packet_batch_add(batch, packet);
      
 #if DEBUG_HEXDUMP
@@ -1309,9 +1336,10 @@ netdev_linux_rxq_recv_xdpsock(struct xdp_queue_pair *xqp,
     }
     dp_packet_batch_init_packet_fields(batch);
 
-    ret = xq_enq(&xqp->rx, descs, rcvd);
+    // TODO: don't clone and don't enq
+    //ret = xq_enq(&xqp->rx, descs, rcvd);
     ovs_assert(ret == 0);
-	return 0;
+	return ret;
 }
 
 static int
@@ -1552,35 +1580,89 @@ netdev_linux_tap_batch_send(struct netdev *netdev_,
     return 0;
 }
 
+static inline void complete_tx_only(struct xdp_queue_pair *q,
+                    struct xdp_desc *descs)
+{
+    unsigned int rcvd;
+    size_t ndescs;
+
+    if (!q->outstanding_tx)
+        return;
+
+    ndescs = (q->outstanding_tx > NETDEV_MAX_BURST) ? NETDEV_MAX_BURST :
+        q->outstanding_tx;
+
+    rcvd = xq_deq(&q->tx, descs, ndescs);
+    if (rcvd > 0) {
+        q->outstanding_tx -= rcvd;
+    }
+}
+
+static void kick_tx(int fd)
+{
+    int ret;
+
+    for (;;) {
+        ret = sendto(fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
+        if (ret >= 0 || errno == ENOBUFS)
+            return;
+        if (errno == EAGAIN)
+            continue;
+        ovs_assert(0);
+    }
+}
+
 static int
 netdev_linux_sock_xdp_send(struct netdev_linux *netdev,
                            struct dp_packet_batch *batch)
 {
-#if 0
-    int ret; 
-    unsigned int frame_num;
-    int nframes;
-    struct dp_packet *packet;
+    int ret, rcvd;
+    struct xdp_queue_pair *xqp;
     struct xdp_desc descs[NETDEV_MAX_BURST];
+    struct dp_packet *packet;
 
-    struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
-    struct netdev *netdev = rx->up.netdev;
+    VLOG_WARN_RL(&rl, "%s num_pkt to send %lu idx %lu",
+         __func__, batch->count, batch->idx);
 
-    VLOG_WARN_RL(&rl, "%s num_pkt to send %lu", __func__, batch->count);
-
+    xqp = netdev->xqp;
     if (xqp->tx.num_free < NETDEV_MAX_BURST)
         ovs_assert(0);
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
-
+        descs[i].idx = packet->idx;
+        descs[i].len = dp_packet_size(packet); 
+        descs[i].offset = 0;
+        descs[i].flags = 0;
     }
 
-    ret = sendto(netdev->tx_fd, NULL, 0, 0, NULL, 0);
-    if (ret == -1) {
-        VLOG_INFO("%s", ovs_strerror(errno));
+    // TX:
+    // 1. enqueue into tx ring, kick start
+    // 2. dequeue from tx ring
+    // 3. enqueu back to rx ring (what if pkt is not from rx ring?)
+
+    VLOG_WARN_RL(&rl, "\t enqueue %lu pkts to tx", batch->count);
+
+    ret = xq_enq(&xqp->tx, descs, batch->count);
+    ovs_assert(ret == 0);
+    kick_tx(xqp->sfd);
+
+    xqp->outstanding_tx += batch->count;
+
+    // we should re-enq into rx ring
+    // see complete_tx_l2fwd doing 
+    /* re-add completed Tx buffers */
+    VLOG_WARN_RL(&rl, "\t dequeue %d pkts from tx", batch->count);
+    rcvd = xq_deq(&xqp->tx, descs, batch->count);
+
+    /* FIXME: each packet can come from differt rx ring */
+    if (rcvd > 0) {
+        // No error checking on TX completion 
+        ret = xq_enq(&xqp->rx, descs, rcvd);
+        ovs_assert(ret == 0);
+        xqp->outstanding_tx -= rcvd;
     }
-#endif
-    VLOG_WARN("done");
+
+    VLOG_WARN("%s done", __func__);
     return 0;
 }
 
