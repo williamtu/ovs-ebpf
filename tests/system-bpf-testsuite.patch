@@ -1,0 +1,10 @@
+--- system-bpf-testsuite	2018-05-31 05:10:16.425135086 -0700
++++ system-bpf-testsuite	2018-05-31 05:13:46.556051030 -0700
+@@ -2369,7 +2369,6 @@
+       else
+ 	if test -d "$at_group_dir"; then
+ 	  find "$at_group_dir" -type d ! -perm -700 -exec chmod u+rwx \{\} \;
+-	  rm -fr "$at_group_dir"
+ 	fi
+ 	rm -f "$at_test_source"
+       fi
