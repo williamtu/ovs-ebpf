@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manpage program="ovs-bpfctl" section="8" title="ovs-bpfctl">
+    <h1>Name</h1>
+    <p>ovs-bpfctl -- administer Open vSwitch BPF state</p>
+
+    <h1>Synopsis</h1>
+    <p><code>ovs-bpfctl</code> [<var>options</var>] <var>command</var> [<var>arg</var>...]</p>
+
+    <h1>Description</h1>
+    <p>This utility can be used to probe and manage OVS BPF state.</p>
+
+    <h1>Commands</h1>
+    <dl>
+      <dt><code>show</code></dt>
+      <dd>
+        Prints a brief overview of the current BPF configuration state.
+      </dd>
+
+      <dt><code>load-dp</code> <var>filename</var></dt>
+      <dd>
+        Loads a BPF datapath implementation from <var>filename</var> into the
+        kernel, and pins it to the filesystem.
+      </dd>
+    </dl>
+
+    <h1>Options</h1>
+    <xi:include href="lib/common.xml" xmlns:xi="http://www.w3.org/2003/XInclude"/>
+
+    <h1>Exit Status</h1>
+    <dl>
+        <dt>0</dt>
+        <dd>Successful program execution.</dd>
+        <dt>1</dt>
+        <dd>Usage or syntax error.</dd>
+    </dl>
+
+    <h1>See also</h1>
+    <p><code>tc</code>(8), <code>tc-bpf</code>(8)</p>
+
+    <h1>Authors</h1>
+    <p>Manpage written by Joe Stringer.</p>
+    <p>Please report corrections or improvements to
+       <code>&lt;bugs@openvswitch.org&gt;</code></p>
+
+</manpage>
