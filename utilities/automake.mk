@@ -39,6 +39,7 @@ utilities/ovs-lib: $(top_builddir)/config.status
 
 EXTRA_DIST += \
 	utilities/ovs-appctl-bashcomp.bash \
+	utilities/ovs-bpfctl.8.xml \
 	utilities/ovs-check-dead-ifs.in \
 	utilities/ovs-ctl.in \
 	utilities/ovs-dev.py \
@@ -103,6 +104,7 @@ CLEANFILES += \
 
 man_MANS += \
 	utilities/ovs-appctl.8 \
+	utilities/ovs-bpfctl.8 \
 	utilities/ovs-ctl.8 \
 	utilities/ovs-testcontroller.8 \
 	utilities/ovs-dpctl.8 \
@@ -147,5 +149,12 @@ endif
 FLAKE8_PYFILES += utilities/ovs-pcap.in \
 	utilities/checkpatch.py utilities/ovs-dev.py \
 	utilities/ovs-tcpdump.in
+
+if HAVE_BPF
+bin_PROGRAMS += \
+	utilities/ovs-bpfctl
+utilities_ovs_bpfctl_SOURCES = utilities/ovs-bpfctl.c
+utilities_ovs_bpfctl_LDADD = lib/libopenvswitch.la
+endif
 
 include utilities/bugtool/automake.mk
