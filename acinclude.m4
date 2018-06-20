@@ -341,6 +341,45 @@ AC_DEFUN([OVS_CHECK_DPDK], [
   AM_CONDITIONAL([DPDK_NETDEV], test "$DPDKLIB_FOUND" = true)
 ])
 
+AC_DEFUN([OVS_CHECK_BPF], [
+  AC_ARG_WITH([bpf],
+              [AC_HELP_STRING([--with-bpf=/path/to/linux/tools/],
+                              [Specify the linux tools directory])],
+              [have_bpf=yes])
+
+  AC_MSG_CHECKING([whether bpf datapath is enabled])
+  if test "$have_bpf" != yes || test "$with_bpf" = no; then
+    AC_MSG_RESULT([no])
+    have_bpf=no
+  else
+    AC_MSG_RESULT([yes])
+    CFLAGS="$CFLAGS -I${with_bpf}/lib -I${with_bpf}/include/uapi"
+    LDFLAGS="$LDFLAGS -L${with_bpf}/lib/bpf"
+    AC_SEARCH_LIBS([elf_begin],[elf],[],
+                   [AC_MSG_ERROR([unable to find libelf, install the dependency package])])
+
+    have_bpf=no
+    AC_COMPILE_IFELSE(
+        [AC_LANG_PROGRAM([#include <bpf/libbpf.h>],
+                         [struct bpf_map;
+                          struct bpf_map_def;
+                          struct bpf_prog_prep_result;])],
+        [AC_COMPILE_IFELSE(
+            [AC_LANG_PROGRAM([#include <iproute2/bpf_elf.h>], [])],
+            [have_bpf=yes],
+            [AC_MSG_ERROR([unable to find iproute2 >= 4.6.0])])],
+        [unable to find libbpf])
+  fi
+
+  AM_CONDITIONAL([HAVE_BPF], [test "$have_bpf" = yes])
+  if test "$have_bpf" = yes; then
+      AC_DEFINE([HAVE_BPF], [1],
+                [Define to 1 if BPF is available.])
+      BPF_LDADD="-lbpf -lelf"
+      AC_SUBST([BPF_LDADD])
+  fi
+])
+
 dnl OVS_GREP_IFELSE(FILE, REGEX, [IF-MATCH], [IF-NO-MATCH])
 dnl
 dnl Greps FILE for REGEX.  If it matches, runs IF-MATCH, otherwise IF-NO-MATCH.

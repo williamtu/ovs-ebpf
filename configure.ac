@@ -80,6 +80,7 @@ AC_SEARCH_LIBS([timer_create], [rt])
 AC_SEARCH_LIBS([pthread_create], [pthread])
 AC_FUNC_STRERROR_R
 
+OVS_CHECK_BPF
 OVS_CHECK_ESX
 OVS_CHECK_WIN64
 OVS_CHECK_WIN32
