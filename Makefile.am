@@ -440,6 +440,7 @@ dist-docs:
 
 include Documentation/automake.mk
 include m4/automake.mk
+include bpf/automake.mk
 include lib/automake.mk
 include ofproto/automake.mk
 include utilities/automake.mk
