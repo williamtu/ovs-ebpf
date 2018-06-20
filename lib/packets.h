@@ -47,7 +47,8 @@ static inline bool ipv6_addr_is_set(const struct in6_addr *addr);
 static inline bool
 flow_tnl_dst_is_set(const struct flow_tnl *tnl)
 {
-    return tnl->ip_dst || ipv6_addr_is_set(&tnl->ipv6_dst);
+    return tnl->ip_dst || ipv6_addr_is_set(&tnl->ipv6_dst) ||
+           tnl->ip_src || ipv6_addr_is_set(&tnl->ipv6_src);
 }
 
 struct in6_addr flow_tnl_dst(const struct flow_tnl *tnl);
@@ -154,7 +155,10 @@ pkt_metadata_init(struct pkt_metadata *md, odp_port_t port)
      * we can just zero out ip_dst and the rest of the data will never be
      * looked at. */
     md->tunnel.ip_dst = 0;
+    md->tunnel.ip_src = 0;
     md->tunnel.ipv6_dst = in6addr_any;
+    md->tunnel.ipv6_src = in6addr_any;
+
     md->in_port.odp_port = port;
 }
 

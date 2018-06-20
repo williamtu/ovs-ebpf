@@ -1338,28 +1338,53 @@ CHECK_FEATURE__(ct_orig_tuple6, ct_orig_tuple6, ct_nw_proto, 1, ETH_TYPE_IPV6)
 static void
 check_support(struct dpif_backer *backer)
 {
-    /* Actions. */
-    backer->rt_support.odp.recirc = check_recirc(backer);
-    backer->rt_support.odp.max_vlan_headers = check_max_vlan_headers(backer);
-    backer->rt_support.odp.max_mpls_depth = check_max_mpls_depth(backer);
-    backer->rt_support.masked_set_action = check_masked_set_action(backer);
-    backer->rt_support.trunc = check_trunc_action(backer);
-    backer->rt_support.ufid = check_ufid(backer);
-    backer->rt_support.tnl_push_pop = dpif_supports_tnl_push_pop(backer->dpif);
-    backer->rt_support.clone = check_clone(backer);
-    backer->rt_support.sample_nesting = check_max_sample_nesting(backer);
-    backer->rt_support.ct_eventmask = check_ct_eventmask(backer);
-    backer->rt_support.ct_clear = check_ct_clear(backer);
+    if (!strcmp(backer->type, "bpf")) {
+        /* Actions. */
+        backer->rt_support.odp.recirc = check_recirc(backer);
+        backer->rt_support.odp.max_vlan_headers = check_max_vlan_headers(backer);
+        backer->rt_support.odp.max_mpls_depth = check_max_mpls_depth(backer);
+        backer->rt_support.masked_set_action = check_masked_set_action(backer);
+        backer->rt_support.trunc = check_trunc_action(backer);
+        backer->rt_support.ufid = check_ufid(backer);
+        backer->rt_support.tnl_push_pop = dpif_supports_tnl_push_pop(backer->dpif);
+        backer->rt_support.clone = check_clone(backer);
+        backer->rt_support.sample_nesting = check_max_sample_nesting(backer);
+        backer->rt_support.ct_eventmask = false;
+        backer->rt_support.ct_clear = false;
 
-    /* Flow fields. */
-    backer->rt_support.odp.ct_state = check_ct_state(backer);
-    backer->rt_support.odp.ct_zone = check_ct_zone(backer);
-    backer->rt_support.odp.ct_mark = check_ct_mark(backer);
-    backer->rt_support.odp.ct_label = check_ct_label(backer);
+        /* Flow fields. */
+        backer->rt_support.odp.ct_state = false;
+        backer->rt_support.odp.ct_zone = false;
+        backer->rt_support.odp.ct_mark = false;
+        backer->rt_support.odp.ct_label = false;
 
-    backer->rt_support.odp.ct_state_nat = check_ct_state_nat(backer);
-    backer->rt_support.odp.ct_orig_tuple = check_ct_orig_tuple(backer);
-    backer->rt_support.odp.ct_orig_tuple6 = check_ct_orig_tuple6(backer);
+        backer->rt_support.odp.ct_state_nat = false;
+        backer->rt_support.odp.ct_orig_tuple = false;
+        backer->rt_support.odp.ct_orig_tuple6 = false;
+    } else {
+        /* Actions. */
+        backer->rt_support.odp.recirc = check_recirc(backer);
+        backer->rt_support.odp.max_vlan_headers = check_max_vlan_headers(backer);
+        backer->rt_support.odp.max_mpls_depth = check_max_mpls_depth(backer);
+        backer->rt_support.masked_set_action = check_masked_set_action(backer);
+        backer->rt_support.trunc = check_trunc_action(backer);
+        backer->rt_support.ufid = check_ufid(backer);
+        backer->rt_support.tnl_push_pop = dpif_supports_tnl_push_pop(backer->dpif);
+        backer->rt_support.clone = check_clone(backer);
+        backer->rt_support.sample_nesting = check_max_sample_nesting(backer);
+        backer->rt_support.ct_eventmask = check_ct_eventmask(backer);
+        backer->rt_support.ct_clear = check_ct_clear(backer);
+
+        /* Flow fields. */
+        backer->rt_support.odp.ct_state = check_ct_state(backer);
+        backer->rt_support.odp.ct_zone = check_ct_zone(backer);
+        backer->rt_support.odp.ct_mark = check_ct_mark(backer);
+        backer->rt_support.odp.ct_label = check_ct_label(backer);
+
+        backer->rt_support.odp.ct_state_nat = check_ct_state_nat(backer);
+        backer->rt_support.odp.ct_orig_tuple = check_ct_orig_tuple(backer);
+        backer->rt_support.odp.ct_orig_tuple6 = check_ct_orig_tuple6(backer);
+    }
 }
 
 static int
