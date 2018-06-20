@@ -59,6 +59,7 @@ extern "C" {
  *      netdev and access each of those from a different thread.)
  */
 
+struct bpf_prog;
 struct dp_packet_batch;
 struct dp_packet;
 struct netdev_class;
@@ -167,6 +168,7 @@ bool netdev_mtu_is_user_config(struct netdev *);
 int netdev_get_ifindex(const struct netdev *);
 int netdev_set_tx_multiq(struct netdev *, unsigned int n_txq);
 enum netdev_pt_mode netdev_get_pt_mode(const struct netdev *);
+uint32_t netdev_hash_port_no(odp_port_t port_no);
 
 /* Packet reception. */
 int netdev_rxq_open(struct netdev *, struct netdev_rxq **, int id);
@@ -316,6 +318,8 @@ struct netdev_queue_stats {
 
 int netdev_set_policing(struct netdev *, uint32_t kbits_rate,
                         uint32_t kbits_burst);
+int netdev_set_filter(struct netdev *netdev, struct bpf_prog *prog);
+int netdev_set_xdp(struct netdev *netdev, struct bpf_prog *prog);
 
 int netdev_get_qos_types(const struct netdev *, struct sset *types);
 int netdev_get_qos_capabilities(const struct netdev *,

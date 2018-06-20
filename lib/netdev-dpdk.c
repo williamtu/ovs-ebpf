@@ -3854,6 +3854,8 @@ unlock:
     NULL,                       /* get_pt_mode */             \
                                                               \
     netdev_dpdk_set_policing,                                 \
+    NULL,                       /* set_filter */              \
+    NULL,                       /* set_xdp */                 \
     netdev_dpdk_get_qos_types,                                \
     NULL,                       /* get_qos_capabilities */    \
     netdev_dpdk_get_qos,                                      \

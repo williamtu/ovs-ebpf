@@ -104,6 +104,27 @@ enum {
 	__TCA_BASIC_MAX
 };
 
+/* BPF classifier */
+
+#define TCA_BPF_FLAG_ACT_DIRECT		(1 << 0)
+
+enum {
+	TCA_BPF_UNSPEC,
+	TCA_BPF_ACT,
+	TCA_BPF_POLICE,
+	TCA_BPF_CLASSID,
+	TCA_BPF_OPS_LEN,
+	TCA_BPF_OPS,
+	TCA_BPF_FD,
+	TCA_BPF_NAME,
+	TCA_BPF_FLAGS,
+	TCA_BPF_FLAGS_GEN,
+	TCA_BPF_TAG,
+	__TCA_BPF_MAX,
+};
+
+#define TCA_BPF_MAX (__TCA_BPF_MAX - 1)
+
 /* Flower classifier */
 
 enum {

@@ -759,6 +759,13 @@ netdev_get_pt_mode(const struct netdev *netdev)
             : NETDEV_PT_LEGACY_L2);
 }
 
+/* Returns a 32-bit hash of the given port number. */
+uint32_t
+netdev_hash_port_no(odp_port_t port_no)
+{
+    return hash_int(odp_to_u32(port_no), 0);
+}
+
 /* Sends 'batch' on 'netdev'.  Returns 0 if successful (for every packet),
  * otherwise a positive errno value.  Returns EAGAIN without blocking if
  * at least one the packets cannot be queued immediately.  Returns EMSGSIZE
@@ -1446,6 +1453,24 @@ netdev_set_policing(struct netdev *netdev, uint32_t kbits_rate,
     return (netdev->netdev_class->set_policing
             ? netdev->netdev_class->set_policing(netdev,
                     kbits_rate, kbits_burst)
+            : EOPNOTSUPP);
+}
+
+/* Attempts to apply (e)BPF filter 'prog' to the netdev. */
+int
+netdev_set_filter(struct netdev *netdev, struct bpf_prog *prog)
+{
+    return (netdev->netdev_class->set_filter
+            ? netdev->netdev_class->set_filter(netdev, prog)
+            : EOPNOTSUPP);
+}
+
+/* Attempts to apply (e)BPF filter 'prog' to the netdev. */
+int
+netdev_set_xdp(struct netdev *netdev, struct bpf_prog *prog)
+{
+    return (netdev->netdev_class->set_xdp
+            ? netdev->netdev_class->set_xdp(netdev, prog)
             : EOPNOTSUPP);
 }
 

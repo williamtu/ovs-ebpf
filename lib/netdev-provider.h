@@ -32,6 +32,7 @@
 extern "C" {
 #endif
 
+struct bpf_prog;
 struct netdev_tnl_build_header_params;
 #define NETDEV_NUMA_UNSPEC OVS_NUMA_UNSPEC
 
@@ -504,6 +505,16 @@ struct netdev_class {
      * This function may be set to null if policing is not supported. */
     int (*set_policing)(struct netdev *netdev, unsigned int kbits_rate,
                         unsigned int kbits_burst);
+
+    /* Attempts to attach a traffic filter in the form of an (e)BPF program.
+     *
+     * This function may be set to null if filters are not supported. */
+    int (*set_filter)(struct netdev *netdev, const struct bpf_prog *);
+
+    /* Attempts to attach a XDP eBPF program.
+     *
+     * This function may be set to null if filters are not supported. */
+    int (*set_xdp)(struct netdev *netdev, const struct bpf_prog *);
 
     /* Adds to 'types' all of the forms of QoS supported by 'netdev', or leaves
      * it empty if 'netdev' does not support QoS.  Any names added to 'types'

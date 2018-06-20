@@ -22,12 +22,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <linux/rtnetlink.h>
 #include <net/if.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 #include <sys/ioctl.h>
 
+#include "bpf.h"
 #include "byte-order.h"
 #include "daemon.h"
 #include "dirs.h"
@@ -43,6 +45,7 @@
 #include "route-table.h"
 #include "smap.h"
 #include "socket-util.h"
+#include "tc.h"
 #include "unaligned.h"
 #include "unixctl.h"
 #include "openvswitch/vlog.h"
@@ -71,6 +74,10 @@ struct vport_class {
     const char *dpif_port;
     struct netdev_class netdev_class;
 };
+
+/* This is set pretty low because we probably won't learn anything from the
+ * additional log messages. */
+static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 bool
 netdev_vport_is_vport_class(const struct netdev_class *class)
@@ -866,6 +873,140 @@ netdev_vport_get_ifindex(const struct netdev *netdev_)
     return linux_get_ifindex(name);
 }
 
+/* "linux-clsact" traffic control class. */
+static int
+clsact_setup_qdisc(struct netdev *netdev)
+{
+    struct ofpbuf request;
+    struct tcmsg *tcmsg;
+    int ifindex;
+
+    ifindex = netdev_vport_get_ifindex(netdev);
+
+    tcmsg = tc_make_request(ifindex, RTM_NEWQDISC, NLM_F_EXCL | NLM_F_CREATE,
+                            &request);
+    if (!tcmsg) {
+        return ENODEV;
+    }
+    tcmsg->tcm_handle = tc_make_handle(0xFFFF, 0);
+    tcmsg->tcm_parent = TC_H_INGRESS;
+    nl_msg_put_string(&request, TCA_KIND, "clsact");
+    nl_msg_put_unspec(&request, TCA_OPTIONS, NULL, 0);
+
+    return tc_transact(&request, NULL);
+}
+
+static int
+tc_add_filter(struct netdev *netdev, int fd, uint32_t parent, const char *name)
+{
+    struct ofpbuf request;
+    struct tcmsg *tcmsg;
+    size_t opts_offset;
+    int ifindex;
+    int error;
+
+    ifindex = netdev_vport_get_ifindex(netdev);
+
+    tcmsg = tc_make_request(ifindex, RTM_NEWTFILTER, NLM_F_EXCL | NLM_F_CREATE,
+                            &request);
+    if (!tcmsg) {
+        return ENODEV;
+    }
+    tcmsg->tcm_handle = tc_make_handle(0, 0x1);
+    tcmsg->tcm_parent = parent;
+#define ETH_P_ALL   0x0003
+    tcmsg->tcm_info = tc_make_handle(0, /* preference */
+                                     (OVS_FORCE uint16_t) htons(ETH_P_ALL));
+
+    nl_msg_put_string(&request, TCA_KIND, "bpf");
+    opts_offset = nl_msg_start_nested(&request, TCA_OPTIONS);
+    nl_msg_put_u32(&request, TCA_BPF_FLAGS, TCA_BPF_FLAG_ACT_DIRECT);
+    nl_msg_put_u32(&request, TCA_BPF_FD, fd);
+    nl_msg_put_string(&request, TCA_BPF_NAME, name);
+    nl_msg_end_nested(&request, opts_offset);
+
+    error = tc_transact(&request, NULL);
+    if (error) {
+        return error;
+    }
+
+    return 0;
+}
+
+/* Attempts to set a BPF filter on the device. Returns 0 if successful,
+ * otherwise a positive errno value. */
+static int
+netdev_vport_set_filter__(struct netdev *netdev_, const struct bpf_prog *prog,
+                          unsigned int OVS_UNUSED valid_bit, int OVS_UNUSED *filter_error,
+                          uint32_t OVS_UNUSED *netdev_filter)
+{
+    struct netdev_vport OVS_UNUSED *netdev = netdev_vport_cast(netdev_);
+    const char *netdev_name = netdev_get_name(netdev_);
+    int error;
+
+    if (!prog) {
+        return 0;
+    }
+
+    VLOG_DBG("Setting %s filter %d on %s (handle %08"PRIx32")", prog->name,
+             prog->fd, netdev_name, prog->handle);
+
+    error = clsact_setup_qdisc(netdev_);
+    if (error && error != EEXIST) {
+        VLOG_WARN("%s: clsact qdisc setup failed: %s",
+                  netdev_name, ovs_strerror(error));
+        goto out;
+    }
+
+    error = tc_add_filter(netdev_, prog->fd, prog->handle, prog->name);
+    if (error){
+        VLOG_WARN_RL(&rl, "%s: adding filter %s failed: %s",
+                     netdev_name, prog->name, ovs_strerror(error));
+        goto out;
+    }
+
+out:
+    VLOG_INFO("%s %d", __func__, error);
+    return error;
+}
+
+static int
+netdev_vport_set_filter(struct netdev *netdev_, const struct bpf_prog *prog)
+{
+    struct netdev_vport *netdev = netdev_vport_cast(netdev_);
+    int error = 0;
+
+    ovs_mutex_lock(&netdev->mutex);
+    if (!prog || prog->handle == INGRESS_HANDLE) {
+        error = netdev_vport_set_filter__(netdev_, prog, 0, NULL, NULL);
+    }
+    ovs_mutex_unlock(&netdev->mutex);
+
+    VLOG_INFO("%s %d", __func__, error);
+
+    return error;
+}
+
+int bpf_set_link_xdp_fd(int ifindex, int fd, uint32_t flags);
+
+static int
+netdev_vport_set_xdp(struct netdev *netdev_, const struct bpf_prog *prog)
+{
+    struct netdev_vport *netdev = netdev_vport_cast(netdev_);
+    int error = 0;
+    int ifindex;
+
+    ovs_mutex_lock(&netdev->mutex);
+    ifindex = netdev_vport_get_ifindex(netdev_);
+    error = bpf_set_link_xdp_fd(ifindex, prog->fd,
+                                   XDP_FLAGS_SKB_MODE);
+    ovs_mutex_unlock(&netdev->mutex);
+
+    VLOG_INFO("%s %d", __func__, error);
+
+    return error;
+}
+
 #define NETDEV_VPORT_GET_IFINDEX netdev_vport_get_ifindex
 #define NETDEV_FLOW_OFFLOAD_API LINUX_FLOW_OFFLOAD_API
 #else /* !__linux__ */
@@ -914,6 +1055,8 @@ netdev_vport_get_ifindex(const struct netdev *netdev_)
     get_pt_mode,                                            \
                                                             \
     NULL,                       /* set_policing */          \
+    netdev_vport_set_filter,    /* set_filter */            \
+    netdev_vport_set_xdp,       /* set_xdp */               \
     NULL,                       /* get_qos_types */         \
     NULL,                       /* get_qos_capabilities */  \
     NULL,                       /* get_qos */               \
@@ -972,7 +1115,7 @@ netdev_vport_tunnel_register(void)
         TUNNEL_CLASS("gre", "gre_sys", netdev_gre_build_header,
                                        netdev_gre_push_header,
                                        netdev_gre_pop_header,
-                                       NULL),
+                                       NETDEV_VPORT_GET_IFINDEX),
         TUNNEL_CLASS("vxlan", "vxlan_sys", netdev_vxlan_build_header,
                                            netdev_tnl_push_udp_header,
                                            netdev_vxlan_pop_header,
