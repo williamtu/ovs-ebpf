@@ -11,6 +11,7 @@
 /ovs-pki.log
 /pki/
 /system-kmod-testsuite
+/system-bpf-testsuite
 /system-userspace-testsuite
 /system-offloads-testsuite
 /test-aes128
