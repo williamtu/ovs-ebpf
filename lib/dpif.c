@@ -71,6 +71,9 @@ static const struct dpif_class *base_dpif_classes[] = {
 #if defined(__linux__) || defined(_WIN32)
     &dpif_netlink_class,
 #endif
+#if HAVE_BPF  /* XXX: Linux 4.9+ */
+    &dpif_bpf_class,
+#endif
     &dpif_netdev_class,
 };
 
