@@ -86,6 +86,7 @@ EXTRA_DIST = \
 	$(MAN_ROOTS) \
 	Vagrantfile \
 	Vagrantfile-FreeBSD \
+	Vagrantfile-eBPF \
 	.mailmap
 bin_PROGRAMS =
 sbin_PROGRAMS =
