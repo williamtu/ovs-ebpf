@@ -1,0 +1,99 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+$bootstrap = <<SCRIPT
+   pwd
+   apt-get update
+   apt-get -y install \
+             build-essential dpkg-dev lintian devscripts fakeroot \
+             debhelper dh-autoreconf uuid-runtime \
+             autoconf automake libtool \
+             python-all python-twisted-core python-twisted-conch \
+             xdg-utils groff graphviz netcat curl \
+             wget python-six ethtool \
+             libcap-ng-dev libssl-dev python-dev openssl \
+             python-pyftpdlib python-flake8 python-tftpy \
+             linux-headers-`uname -r`
+    apt-get install -y cmake libbison-dev bison flex bc libelf-dev
+    apt-get install -y libmnl-dev gcc-multilib libc6-dev-i386 pkg-config
+SCRIPT
+
+$install_iproute2 = <<SCRIPT
+    pwd
+    mkdir -p build
+    cd build
+    rm -rf iproute2
+    git clone git://git.kernel.org/pub/scm/network/iproute2/iproute2.git && \
+    cd iproute2 && \
+    ./configure && \
+    make -j `getconf _NPROCESSORS_ONLN` && make install
+SCRIPT
+
+$install_llvm = <<SCRIPT
+    pwd
+    cd build
+    curl -Ssl -o clang+llvm.tar.xz http://releases.llvm.org/3.8.1/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz
+    tar -C /usr/local -xJf ./clang+llvm.tar.xz || true
+    mv /usr/local/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04 /usr/local/clang+llvm || true
+    rm -f clang+llvm.tar.xz
+    export PATH="/usr/local/clang+llvm/bin:$PATH"
+    llc --version
+    clang --version
+SCRIPT
+
+$install_libbpf = <<SCRIPT
+    pwd
+    cd build
+    rm -rf linux
+    git clone --branch v4.15 --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+    cd linux && make defconfig && make -C tools/lib/bpf/ && cd tools/lib/bpf/ && make install
+SCRIPT
+
+$build_ovs = <<SCRIPT
+    cd /home/vagrant/ovs
+    pwd
+    export PATH="/usr/local/clang+llvm/bin:$PATH"
+    which clang
+    which llc
+    pwd
+    make distclean
+    ./boot.sh
+    sudo ./configure --with-bpf=/home/vagrant/build/linux/tools/
+    make
+SCRIPT
+
+$ovs_check = <<SCRIPT
+    pwd
+    cd /home/vagrant/ovs
+    sudo make check TESTSUITEFLAGS='1'
+SCRIPT
+
+$sparse_check = <<SCRIPT
+    pwd
+    cd /home/vagrant/ovs
+    touch lib/dpif-bpf-odp.c
+    touch lib/dpif-bpf.c
+    make C=1 CF="-Wsparse-all -D__CHECKER__ -D__CHECK_ENDIAN__ -Wbitwise" lib/dpif-bpf-odp.o
+    make C=1 CF="-Wsparse-all -D__CHECKER__ -D__CHECK_ENDIAN__ -Wbitwise" lib/dpif-bpf.o
+SCRIPT
+
+$ovs_check_bpf = <<SCRIPT
+    pwd
+    cd /home/vagrant/ovs
+    export LD_LIBRARY_PATH=/home/vagrant/build/linux/tools/lib/bpf/:$LD_LIBRARY_PATH
+    export PATH="/usr/local/clang+llvm/bin:$PATH"
+    objdump -h /home/vagrant/ovs/bpf/datapath.o
+    sudo make check-bpf TESTSUITEFLAGS='1'
+SCRIPT
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/bionic64"
+  config.vm.synced_folder ".", "/home/vagrant/ovs"
+
+  config.vm.provision "bootstrap", type: "shell", inline: $bootstrap
+  config.vm.provision "install_iproute2", type: "shell", inline: $install_iproute2
+  config.vm.provision "install_llvm", type: "shell", inline: $install_llvm
+  config.vm.provision "install_libbpf", type: "shell", inline: $install_libbpf
+  config.vm.provision "build_ovs", type: "shell", inline: $build_ovs
+  config.vm.provision "ovs_check", type: "shell", inline: $ovs_check
+end
