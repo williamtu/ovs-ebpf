@@ -38,6 +38,8 @@
 #include "maps.h"
 #include "helpers.h"
 
+#define ENABLE_POINTER_LOOKUP 1
+
 #define ALIGNED_CAST(TYPE, ATTR) ((TYPE) (void *) (ATTR))
 
 #define IP_CSUM_OFF (ETH_HLEN + offsetof(struct iphdr, check))
@@ -135,7 +137,7 @@ static inline struct bpf_action *pre_tail_action(struct __sk_buff *skb,
         /* Downcall packet has a dedicated action list */
         batch = bpf_map_lookup_elem(&execute_actions, &zero_index);
     } else {
-        struct bpf_flow_key *exe_flow_key, flow_key;
+        struct bpf_flow_key *exe_flow_key;
 
         exe_flow_key = bpf_map_lookup_elem(&percpu_executing_key,
                                            &zero_index);
@@ -144,8 +146,16 @@ static inline struct bpf_action *pre_tail_action(struct __sk_buff *skb,
             return NULL;
         }
 
-        flow_key = *exe_flow_key;
+#if ENABLE_POINTER_LOOKUP
+        /*
+         * kernel 4.18-rc1, commit:
+         * bpf: allow map helpers access to map values directly
+         */
+        batch = bpf_map_lookup_elem(&flow_table, exe_flow_key);
+#else
+        struct bpf_flow_key flow_key = *exe_flow_key;
         batch = bpf_map_lookup_elem(&flow_table, &flow_key);
+#endif
     }
     if (!batch) {
         printt("no batch action found\n");
@@ -566,8 +576,11 @@ static int tail_action_set_masked(struct __sk_buff *skb)
          */
         set_ip_tos(skb, ipv4->ipv4_tos);
         set_ip_ttl(skb, ipv4->ipv4_ttl);
+
+#if ENABLE_POINTER_LOOKUP
         set_ip_src(skb, ipv4->ipv4_src);
         set_ip_dst(skb, ipv4->ipv4_dst);
+#endif
 
         printt("set_masked ipv4 done\n");
         /* XXX ignore frag */
