@@ -48,7 +48,14 @@
 
 static inline void set_ip_tos(struct __sk_buff *skb, __u8 new_tos)
 {
-    __u8 old_tos = load_byte(skb, TOS_OFF);
+    __u8 old_tos;
+
+    bpf_skb_load_bytes(skb, TOS_OFF, &old_tos, 1);
+
+    if (old_tos == new_tos) {
+        printt("tos not change %d\n", old_tos);
+        return;
+    }
 
     bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_tos, new_tos, 2);
 
@@ -60,23 +67,48 @@ static inline void set_ip_tos(struct __sk_buff *skb, __u8 new_tos)
 
 static inline void set_ip_ttl(struct __sk_buff *skb, __u8 new_ttl)
 {
-    __u8 old_ttl = load_byte(skb, TTL_OFF);
+    __u8 old_ttl;
+
+    bpf_skb_load_bytes(skb, TTL_OFF, &old_ttl, 1);
+
+    if (old_ttl == new_ttl) {
+        printt("ttl not change %d\n", old_ttl);
+        return;
+    }
+
+    printt("old ttl %d -> new ttl %d\n", old_ttl, new_ttl);
 
     bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_ttl, new_ttl, 2);
     bpf_skb_store_bytes(skb, TTL_OFF, &new_ttl, sizeof(new_ttl), 0);
 }
 
-static inline void set_ip_dst(struct __sk_buff *skb, __u32 new_dst)
+static inline void set_ip_dst(struct __sk_buff *skb, __be32 new_dst)
 {
-    __u32 old_dst = load_word(skb, DST_OFF);
+    __be32 old_dst;
+
+    bpf_skb_load_bytes(skb, DST_OFF, &old_dst, 4);
+
+    if (old_dst == new_dst) {
+        printt("dst ip not change %x\n", old_dst);
+        return;
+    }
+    printt("old dst %x -> new dst %x\n", old_dst, new_dst);
 
     bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_dst, new_dst, 4);
     bpf_skb_store_bytes(skb, DST_OFF, &new_dst, sizeof(new_dst), 0);
 }
 
-static inline void set_ip_src(struct __sk_buff *skb, __u32 new_src)
+static inline void set_ip_src(struct __sk_buff *skb, __be32 new_src)
 {
-    __u32 old_src = load_word(skb, SRC_OFF);
+    __be32 old_src;
+
+    bpf_skb_load_bytes(skb, SRC_OFF, &old_src, 4);
+
+    if (old_src == new_src) {
+        printt("src ip not change %x\n", old_src);
+        return;
+    }
+    printt("old src %x -> new src %x\n", old_src, new_src);
 
     bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_src, new_src, 4);
     bpf_skb_store_bytes(skb, SRC_OFF, &new_src, sizeof(new_src), 0);
@@ -529,22 +561,15 @@ static int tail_action_set_masked(struct __sk_buff *skb)
 
         /* value from map */
         ipv4 = &action->u.mset.key.ipv4;
-        memcpy(&nh->saddr, &ipv4->ipv4_src, 8); 
-        nh->protocol = ipv4->ipv4_proto;
-        nh->tos = ipv4->ipv4_tos;
-        nh->ttl = ipv4->ipv4_ttl;
-
+        /* set ipv4_proto is not supported, see
+         * datapath/actions.c
+         */
         set_ip_tos(skb, ipv4->ipv4_tos);
         set_ip_ttl(skb, ipv4->ipv4_ttl);
-        //set_ip_src(skb, ipv4->ipv4_src);
-        //set_ip_dst(skb, ipv4->ipv4_dst);
+        set_ip_src(skb, ipv4->ipv4_src);
+        set_ip_dst(skb, ipv4->ipv4_dst);
 
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->saddr, ipv4->ipv4_src, 4);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->daddr, ipv4->ipv4_dst, 4);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->protocol, ipv4->ipv4_proto, 1);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->tos, ipv4->ipv4_tos, 2);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->ttl, ipv4->ipv4_ttl, 1);
-
+        printt("set_masked ipv4 done\n");
         /* XXX ignore frag */
 
         break;
