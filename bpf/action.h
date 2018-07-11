@@ -372,14 +372,17 @@ static int tail_action_push_vlan(struct __sk_buff *skb)
     struct bpf_action *action;
     struct bpf_action_batch *batch;
 
+    printt("push vlan\n");
     action = pre_tail_action(skb, &batch);
     if (!action)
         return TC_ACT_SHOT;
 
-    printt("vlan push tci %d\n", action->u.push_vlan.vlan_tci);
-    printt("vlan push tpid %d\n", action->u.push_vlan.vlan_tpid);
-    bpf_skb_vlan_push(skb, action->u.push_vlan.vlan_tpid,
-                           action->u.push_vlan.vlan_tci & ~VLAN_TAG_PRESENT);
+    printt("vlan push tci %d\n", bpf_ntohs(action->u.push_vlan.vlan_tci));
+    printt("vlan push tpid %d\n", bpf_ntohs(action->u.push_vlan.vlan_tpid));
+
+    vlan_push(skb, action->u.push_vlan.vlan_tpid,
+                   bpf_ntohs(action->u.push_vlan.vlan_tci) & VLAN_VID_MASK);
+                   //bpf_ntohs(action->u.push_vlan.vlan_tci) & (u16)~VLAN_TAG_PRESENT);
 
     return post_tail_action(skb, batch);
 }

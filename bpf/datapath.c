@@ -88,6 +88,11 @@ static inline int process_upcall(struct __sk_buff *skb)
     if (hdrs->valid & VLAN_VALID) {
         printt("upcall skb->len(%d) with vlan %x %x\n",
                skb->len, hdrs->vlan.etherType, hdrs->vlan.tci);
+
+        /* Here we push the vlan to the packet data so
+         * the upcall function 'extract_key' can get vlan info.
+         * Is this the same as kernel dp?
+         */
         skb_vlan_push(skb, hdrs->vlan.etherType,
                       hdrs->vlan.tci & ~VLAN_TAG_PRESENT);
         md.skb_len = skb->len;

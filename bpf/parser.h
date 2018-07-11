@@ -73,14 +73,7 @@ static int ovs_parser(struct __sk_buff* skb) {
         if (ebpf_headers.valid & VLAN_VALID) {
             goto parse_cvlan;
         }
-
         printt("Nested vlan? not supported!\n");
-        if (1) return 0;
-        if (skb->vlan_tci) {
-            goto parse_cvlan;
-        } else {
-            goto parse_vlan;
-        }
     } if (tmp_3 == 0x0608) {
         goto parse_arp;
     } if (tmp_3 == 0x0008) {
@@ -91,6 +84,15 @@ static int ovs_parser(struct __sk_buff* skb) {
         goto ovs_tbl_4;
     }
 
+    /* Two cases:
+     * 4-byte 8021AD (0x8a88), then 4-byte 8021Q, or
+     * 4-byte 8021Q only
+     */
+
+    /* 8021Q is always in skb metadata, not in packet data,
+     * so we don't need to parse it.
+     */
+#if 0
     parse_vlan: {
         struct vlan_tag_t *vlan = &ebpf_headers.vlan;
         if (skb_load_bytes(skb, offset, &vlan, 4) < 0) {
@@ -116,6 +118,7 @@ static int ovs_parser(struct __sk_buff* skb) {
                 goto ovs_tbl_4;
         }
     }
+#endif
     parse_cvlan: {
         if (skb_load_bytes(skb, offset, &ebpf_headers.cvlan, 4) < 0) {
             ebpf_error = p4_pe_header_too_short;

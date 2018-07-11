@@ -135,7 +135,7 @@ struct vlan_tag_t {
         u16 pcp:3,
             cfi:1,
             vid:12;
-        ovs_be16 tci;    /* host byte order */
+        u16 tci;    /* host byte order */
     };
     ovs_be16 etherType;  /* network byte order */
 };

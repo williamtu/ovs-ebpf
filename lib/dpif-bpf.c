@@ -106,7 +106,7 @@ static void vlog_hex_dump(const u8 *buf, size_t count)
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
     ds_put_hex_dump(&ds, buf, count, 0, false);
-    VLOG_DBG("\n%s", ds_cstr(&ds));
+    VLOG_INFO("\n%s", ds_cstr(&ds));
     ds_destroy(&ds);
 }
 
@@ -1617,6 +1617,20 @@ dpif_bpf_handlers_set(struct dpif *dpif_, uint32_t n_handlers)
     return error;
 }
 
+/* XXX: duplicate with check_support */
+static struct odp_support dp_bpf_support = {
+    .max_vlan_headers = 2,
+    .max_mpls_depth = 2,
+    .recirc = true,
+    .ct_state = true,
+    .ct_zone = true,
+    .ct_mark = true,
+    .ct_label = true,
+    .ct_state_nat = true,
+    .ct_orig_tuple = true,
+    .ct_orig_tuple6 = true,
+};
+
 static int
 extract_key(struct dpif_bpf_dp *dpif, const struct bpf_flow_key *key,
             struct dp_packet *packet, struct ofpbuf *buf)
@@ -1624,8 +1638,9 @@ extract_key(struct dpif_bpf_dp *dpif, const struct bpf_flow_key *key,
     struct flow flow;
     struct odp_flow_key_parms parms = {
         .flow = &flow,
+        .mask = NULL,
+        .support = dp_bpf_support, /* used at odp_flow_key_from_flow */
     };
-    parms.support.recirc = true;
 
     {
         struct ds ds = DS_EMPTY_INITIALIZER;
