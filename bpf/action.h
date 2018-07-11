@@ -84,9 +84,9 @@ static inline void set_ip_ttl(struct __sk_buff *skb, __u8 new_ttl)
     bpf_skb_store_bytes(skb, TTL_OFF, &new_ttl, sizeof(new_ttl), 0);
 }
 
-static inline void set_ip_dst(struct __sk_buff *skb, __be32 new_dst)
+static inline void set_ip_dst(struct __sk_buff *skb, ovs_be32 new_dst)
 {
-    __be32 old_dst;
+    ovs_be32 old_dst;
 
     bpf_skb_load_bytes(skb, DST_OFF, &old_dst, 4);
 
@@ -96,13 +96,13 @@ static inline void set_ip_dst(struct __sk_buff *skb, __be32 new_dst)
     }
     printt("old dst %x -> new dst %x\n", old_dst, new_dst);
 
-    bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_dst, new_dst, 4);
+    l3_csum_replace4(skb, IP_CSUM_OFF, old_dst, new_dst);
     bpf_skb_store_bytes(skb, DST_OFF, &new_dst, sizeof(new_dst), 0);
 }
 
-static inline void set_ip_src(struct __sk_buff *skb, __be32 new_src)
+static inline void set_ip_src(struct __sk_buff *skb, ovs_be32 new_src)
 {
-    __be32 old_src;
+    ovs_be32 old_src;
 
     bpf_skb_load_bytes(skb, SRC_OFF, &old_src, 4);
 
@@ -112,7 +112,7 @@ static inline void set_ip_src(struct __sk_buff *skb, __be32 new_src)
     }
     printt("old src %x -> new src %x\n", old_src, new_src);
 
-    bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_src, new_src, 4);
+    l3_csum_replace4(skb, IP_CSUM_OFF, old_src, new_src);
     bpf_skb_store_bytes(skb, SRC_OFF, &new_src, sizeof(new_src), 0);
 }
 

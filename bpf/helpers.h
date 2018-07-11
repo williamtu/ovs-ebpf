@@ -73,6 +73,30 @@ typedef unsigned long long u64;
 #define __constant_htons(x) (___constant_swab16((x)))
 #define __constant_ntohs(x) ___constant_swab16((x))
 
+static u16 OVS_UNUSED bpf_ntohs(ovs_be16 x) {
+    return __constant_ntohs((OVS_FORCE u16)x);
+}
+
+static ovs_be16 bpf_htons(u16 x) {
+    return (OVS_FORCE ovs_be16)__constant_htons(x);
+}
+
+static u32 OVS_UNUSED bpf_ntohl(ovs_be32 x) {
+    return __constant_ntohl((OVS_FORCE u32)x);
+}
+
+static ovs_be32 bpf_htonl(u32 x) {
+    return (OVS_FORCE ovs_be32)__constant_htonl(x);
+}
+
+static u64 OVS_UNUSED bpf_ntohll(ovs_be64 x) {
+    return ___constant_swab64((OVS_FORCE u64)x);
+}
+
+static ovs_be64 bpf_htonll(u64 x) {
+    return (OVS_FORCE ovs_be64)___constant_swab64(x);
+}
+
 /* helper macro to place programs, maps, license in
  * different sections in elf_bpf file. Section names
  * are interpreted by elf_bpf loader
@@ -140,6 +164,11 @@ static int (*bpf_skb_change_tail)(void *ctx, int len, int flags) =
 static int (*bpf_get_hash_recalc)(void *ctx) =
     (void *) BPF_FUNC_get_hash_recalc;
 
+static int OVS_UNUSED vlan_push(void *ctx, ovs_be16 proto, u16 tci)
+{
+    return bpf_skb_vlan_push(ctx, (OVS_FORCE int)proto, tci);
+}
+
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
  */
@@ -188,6 +217,16 @@ static int (*bpf_skb_under_cgroup)(void *ctx, void *map, int index) =
 	(void *) BPF_FUNC_skb_under_cgroup;
 static int (*bpf_skb_change_head)(void *, int len, int flags) =
 	(void *) BPF_FUNC_skb_change_head;
+
+static int l3_csum_replace4(void *ctx, int off, ovs_be32 from, ovs_be32 to)
+{
+    return bpf_l3_csum_replace(ctx, off, (OVS_FORCE int)from, (OVS_FORCE int)to, 4);
+}
+
+static int OVS_UNUSED l3_csum_replace2(void *ctx, int off, ovs_be16 from, ovs_be16 to)
+{
+    return bpf_l3_csum_replace(ctx, off, (OVS_FORCE int)from, (OVS_FORCE int)to, 2);
+}
 
 #if defined(__x86_64__)
 #define PT_REGS_PARM1(x) ((x)->di)

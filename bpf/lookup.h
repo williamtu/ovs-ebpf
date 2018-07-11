@@ -199,6 +199,7 @@ static int lookup(struct __sk_buff* skb OVS_UNUSED)
         /* OVS_NOT_REACHED */
         return TC_ACT_OK;
     } else {
+        printt("action found! stay in BPF\n");
         /* DP Stats Update */
         stats_account(OVS_DP_STATS_HIT);
         /* Flow Stats Update */
