@@ -590,8 +590,8 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             ovs_be16 tci = nl_attr_get_be16(a);
             struct vlan_tag_t *vlan = inner ? &key->headers.cvlan
                                             : &key->headers.vlan;
-            vlan->tci = htons(tci);
-            key->headers.vlan.tci = htons(tci);
+            vlan->tci = ntohs(tci);
+            key->headers.vlan.tci = ntohs(tci);
             /* etherType is set below in OVS_KEY_ATTR_ETHERTYPE. */
             key->headers.valid |= VLAN_VALID;
             break;
