@@ -388,7 +388,11 @@ static void upcall_uninit(struct upcall *);
 static upcall_callback upcall_cb;
 static dp_purge_callback dp_purge_cb;
 
+#ifdef HAVE_BPF
+static atomic_bool enable_megaflows = ATOMIC_VAR_INIT(false);
+#else
 static atomic_bool enable_megaflows = ATOMIC_VAR_INIT(true);
+#endif
 static atomic_bool enable_ufid = ATOMIC_VAR_INIT(true);
 
 void

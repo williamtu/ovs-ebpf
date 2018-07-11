@@ -38,6 +38,8 @@
 #include "maps.h"
 #include "helpers.h"
 
+#define ENABLE_POINTER_LOOKUP 1
+
 #define ALIGNED_CAST(TYPE, ATTR) ((TYPE) (void *) (ATTR))
 
 #define IP_CSUM_OFF (ETH_HLEN + offsetof(struct iphdr, check))
@@ -48,7 +50,14 @@
 
 static inline void set_ip_tos(struct __sk_buff *skb, __u8 new_tos)
 {
-    __u8 old_tos = load_byte(skb, TOS_OFF);
+    __u8 old_tos;
+
+    bpf_skb_load_bytes(skb, TOS_OFF, &old_tos, 1);
+
+    if (old_tos == new_tos) {
+        printt("tos not change %d\n", old_tos);
+        return;
+    }
 
     bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_tos, new_tos, 2);
 
@@ -60,25 +69,50 @@ static inline void set_ip_tos(struct __sk_buff *skb, __u8 new_tos)
 
 static inline void set_ip_ttl(struct __sk_buff *skb, __u8 new_ttl)
 {
-    __u8 old_ttl = load_byte(skb, TTL_OFF);
+    __u8 old_ttl;
+
+    bpf_skb_load_bytes(skb, TTL_OFF, &old_ttl, 1);
+
+    if (old_ttl == new_ttl) {
+        printt("ttl not change %d\n", old_ttl);
+        return;
+    }
+
+    printt("old ttl %d -> new ttl %d\n", old_ttl, new_ttl);
 
     bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_ttl, new_ttl, 2);
     bpf_skb_store_bytes(skb, TTL_OFF, &new_ttl, sizeof(new_ttl), 0);
 }
 
-static inline void set_ip_dst(struct __sk_buff *skb, __u32 new_dst)
+static inline void set_ip_dst(struct __sk_buff *skb, ovs_be32 new_dst)
 {
-    __u32 old_dst = load_word(skb, DST_OFF);
+    ovs_be32 old_dst;
 
-    bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_dst, new_dst, 4);
+    bpf_skb_load_bytes(skb, DST_OFF, &old_dst, 4);
+
+    if (old_dst == new_dst) {
+        printt("dst ip not change %x\n", old_dst);
+        return;
+    }
+    printt("old dst %x -> new dst %x\n", old_dst, new_dst);
+
+    l3_csum_replace4(skb, IP_CSUM_OFF, old_dst, new_dst);
     bpf_skb_store_bytes(skb, DST_OFF, &new_dst, sizeof(new_dst), 0);
 }
 
-static inline void set_ip_src(struct __sk_buff *skb, __u32 new_src)
+static inline void set_ip_src(struct __sk_buff *skb, ovs_be32 new_src)
 {
-    __u32 old_src = load_word(skb, SRC_OFF);
+    ovs_be32 old_src;
 
-    bpf_l3_csum_replace(skb, IP_CSUM_OFF, old_src, new_src, 4);
+    bpf_skb_load_bytes(skb, SRC_OFF, &old_src, 4);
+
+    if (old_src == new_src) {
+        printt("src ip not change %x\n", old_src);
+        return;
+    }
+    printt("old src %x -> new src %x\n", old_src, new_src);
+
+    l3_csum_replace4(skb, IP_CSUM_OFF, old_src, new_src);
     bpf_skb_store_bytes(skb, SRC_OFF, &new_src, sizeof(new_src), 0);
 }
 
@@ -103,7 +137,7 @@ static inline struct bpf_action *pre_tail_action(struct __sk_buff *skb,
         /* Downcall packet has a dedicated action list */
         batch = bpf_map_lookup_elem(&execute_actions, &zero_index);
     } else {
-        struct bpf_flow_key *exe_flow_key, flow_key;
+        struct bpf_flow_key *exe_flow_key;
 
         exe_flow_key = bpf_map_lookup_elem(&percpu_executing_key,
                                            &zero_index);
@@ -112,8 +146,16 @@ static inline struct bpf_action *pre_tail_action(struct __sk_buff *skb,
             return NULL;
         }
 
-        flow_key = *exe_flow_key;
+#if ENABLE_POINTER_LOOKUP
+        /*
+         * kernel 4.18-rc1, commit:
+         * bpf: allow map helpers access to map values directly
+         */
+        batch = bpf_map_lookup_elem(&flow_table, exe_flow_key);
+#else
+        struct bpf_flow_key flow_key = *exe_flow_key;
         batch = bpf_map_lookup_elem(&flow_table, &flow_key);
+#endif
     }
     if (!batch) {
         printt("no batch action found\n");
@@ -330,14 +372,17 @@ static int tail_action_push_vlan(struct __sk_buff *skb)
     struct bpf_action *action;
     struct bpf_action_batch *batch;
 
+    printt("push vlan\n");
     action = pre_tail_action(skb, &batch);
     if (!action)
         return TC_ACT_SHOT;
 
-    printt("vlan push tci %d\n", action->u.push_vlan.vlan_tci);
-    printt("vlan push tpid %d\n", action->u.push_vlan.vlan_tpid);
-    bpf_skb_vlan_push(skb, action->u.push_vlan.vlan_tpid,
-                           action->u.push_vlan.vlan_tci & ~VLAN_TAG_PRESENT);
+    printt("vlan push tci %d\n", bpf_ntohs(action->u.push_vlan.vlan_tci));
+    printt("vlan push tpid %d\n", bpf_ntohs(action->u.push_vlan.vlan_tpid));
+
+    vlan_push(skb, action->u.push_vlan.vlan_tpid,
+                   bpf_ntohs(action->u.push_vlan.vlan_tci) & VLAN_VID_MASK);
+                   //bpf_ntohs(action->u.push_vlan.vlan_tci) & (u16)~VLAN_TAG_PRESENT);
 
     return post_tail_action(skb, batch);
 }
@@ -529,22 +574,18 @@ static int tail_action_set_masked(struct __sk_buff *skb)
 
         /* value from map */
         ipv4 = &action->u.mset.key.ipv4;
-        memcpy(&nh->saddr, &ipv4->ipv4_src, 8); 
-        nh->protocol = ipv4->ipv4_proto;
-        nh->tos = ipv4->ipv4_tos;
-        nh->ttl = ipv4->ipv4_ttl;
-
+        /* set ipv4_proto is not supported, see
+         * datapath/actions.c
+         */
         set_ip_tos(skb, ipv4->ipv4_tos);
         set_ip_ttl(skb, ipv4->ipv4_ttl);
-        //set_ip_src(skb, ipv4->ipv4_src);
-        //set_ip_dst(skb, ipv4->ipv4_dst);
 
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->saddr, ipv4->ipv4_src, 4);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->daddr, ipv4->ipv4_dst, 4);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->protocol, ipv4->ipv4_proto, 1);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->tos, ipv4->ipv4_tos, 2);
-        //bpf_l3_csum_replace(skb, IP_CSUM_OFF, nh->ttl, ipv4->ipv4_ttl, 1);
+#if ENABLE_POINTER_LOOKUP
+        set_ip_src(skb, ipv4->ipv4_src);
+        set_ip_dst(skb, ipv4->ipv4_dst);
+#endif
 
+        printt("set_masked ipv4 done\n");
         /* XXX ignore frag */
 
         break;

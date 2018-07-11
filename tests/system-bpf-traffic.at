@@ -196,12 +196,12 @@ OVS_WAIT_UNTIL([ip netns exec at_ns0 ping6 -c 1 fc00:1::2])
 NS_CHECK_EXEC([at_ns0], [ping6 -q -c 3 -i 0.3 -w 2 fc00:1::2 | FORMAT_PING], [0], [dnl
 3 packets transmitted, 3 received, 0% packet loss, time 0ms
 ])
-NS_CHECK_EXEC([at_ns0], [ping6 -s 1600 -q -c 3 -i 0.3 -w 6 fc00:1::2 | FORMAT_PING], [0], [dnl
-3 packets transmitted, 3 received, 0% packet loss, time 0ms
-])
-NS_CHECK_EXEC([at_ns0], [ping6 -s 3200 -q -c 3 -i 0.3 -w 6 fc00:1::2 | FORMAT_PING], [0], [dnl
-3 packets transmitted, 3 received, 0% packet loss, time 0ms
-])
+dnl NS_CHECK_EXEC([at_ns0], [ping6 -s 1600 -q -c 3 -i 0.3 -w 6 fc00:1::2 | FORMAT_PING], [0], [dnl
+dnl 3 packets transmitted, 3 received, 0% packet loss, time 0ms
+dnl ])
+dnl NS_CHECK_EXEC([at_ns0], [ping6 -s 3200 -q -c 3 -i 0.3 -w 6 fc00:1::2 | FORMAT_PING], [0], [dnl
+dnl 3 packets transmitted, 3 received, 0% packet loss, time 0ms
+dnl ])
 
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP

@@ -15,7 +15,7 @@
  */
 
 #include <config.h>
-
+#include <linux/if_ether.h>
 #include "dpif-bpf-odp.h"
 
 #include <errno.h>
@@ -504,7 +504,9 @@ bpf_flow_key_to_flow(const struct bpf_flow_key *key, struct flow *flow)
     }
     if (hdrs->valid & VLAN_VALID) {
         flow->vlans[0].tpid = hdrs->vlan.etherType;
-        flow->vlans[0].tci = hdrs->vlan.tci | htons(VLAN_CFI);
+        flow->vlans[0].tci = htons(hdrs->vlan.tci) | htons(VLAN_CFI);
+        // extract_
+        flow->dl_type = hdrs->vlan.etherType;
     }
 
     /* L3 */
@@ -598,20 +600,37 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             ovs_be16 tci = nl_attr_get_be16(a);
             struct vlan_tag_t *vlan = inner ? &key->headers.cvlan
                                             : &key->headers.vlan;
-            vlan->tci = tci;
+            vlan->tci = htons(tci);
+            key->headers.vlan.tci = htons(tci);
             /* etherType is set below in OVS_KEY_ATTR_ETHERTYPE. */
             key->headers.valid |= VLAN_VALID;
             break;
         }
-        case OVS_KEY_ATTR_ETHERTYPE:
-            /* etherType to set depends on encapsulation. */
-            if (key->headers.valid & VLAN_VALID) {
-                key->headers.vlan.etherType = key->headers.ethernet.etherType;
-            }
+        case OVS_KEY_ATTR_ETHERTYPE: {
+            ovs_be16 dl_type;
 
-            key->headers.ethernet.etherType = nl_attr_get_be16(a);
-            key->headers.valid |= ETHER_VALID; /* FIXME */
+            dl_type = nl_attr_get_be16(a);
+            key->headers.ethernet.etherType = dl_type;
+            key->headers.valid |= ETHER_VALID;
+
+            if (dl_type == htons(ETH_P_IP)) {
+                key->headers.valid |= IPV4_VALID;
+            } else if (dl_type == htons(ETH_P_IPV6)) {
+                key->headers.valid |= IPV6_VALID;
+            } else if (dl_type == htons(ETH_P_ARP)) {
+                key->headers.valid |= ARP_VALID;
+            } else if (dl_type == htons(ETH_P_8021Q)) {
+                key->headers.vlan.etherType = htons(ETH_P_8021Q);
+                key->headers.valid |= VLAN_VALID;
+            } else if (dl_type == htons(ETH_P_8021AD)) {
+                key->headers.cvlan.etherType = htons(ETH_P_8021AD);
+                key->headers.valid |= CVLAN_VALID;
+            } else {
+                VLOG_ERR("%s dl_type %x not supported",
+                          __func__, ntohs(dl_type));
+            }
             break;
+        }
         case OVS_KEY_ATTR_IPV4: {
             const struct ovs_key_ipv4 *ipv4 = nl_attr_get(a);
 

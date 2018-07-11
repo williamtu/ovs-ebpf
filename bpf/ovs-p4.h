@@ -27,31 +27,9 @@
 #define MASK(_n) ((_n) < 64 ? (1ull << (_n)) - 1 : ((u64)-1LL))
 #define MASK128(_n) ((_n) < 128 ? ((unsigned __int128)1 << (_n)) - 1 : ((unsigned __int128)-1))
 
-static inline u16 bpf_ntohs(u16 val) {
-  /* will be recognized by gcc into rotate insn and eventually rolw 8 */
-  return (val << 8) | (val >> 8);
-}
-static inline u32 bpf_ntohl(u32 val) {
-  /* gcc will use bswapsi2 insn */
-  return __builtin_bswap32(val);
-}
-static inline u64 bpf_ntohll(u64 val) {
-  /* gcc will use bswapdi2 insn */
-  return __builtin_bswap64(val);
-}
-static inline u16 bpf_htons(u16 val) {
-  return bpf_ntohs(val);
-}
-static inline u32 bpf_htonl(u32 val) {
-  return bpf_ntohl(val);
-}
-static inline u64 bpf_htonll(u64 val) {
-  return bpf_ntohll(val);
-}
 static inline u64 load_dword(void *skb, u64 off) {
     return ((u64)load_word(skb, off) << 32) | load_word(skb, off + 4);
 }
-
 static inline __attribute__((always_inline))
 void bpf_dins_pkt(void *pkt, u64 off, u64 bofs, u64 bsz, u64 val) {
   // The load_xxx function does a bswap before returning the short/word/dword,

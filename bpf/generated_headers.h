@@ -37,8 +37,7 @@ struct pkt_metadata_t {
     u16 ct_zone; /* 16 bits */
     u32 ct_mark; /* 32 bits */
     char ct_label[16]; /* 128 bits */
-    u32 in_port; /* 32 bits */
-    u32 packet_length;
+    u32 in_port; /* 32 bits ifindex */
 };
 struct udp_t {
     u16 srcPort; /* 16 bits */
@@ -136,7 +135,7 @@ struct vlan_tag_t {
         u16 pcp:3,
             cfi:1,
             vid:12;
-        ovs_be16 tci;    /* host byte order */
+        u16 tci;    /* host byte order */
     };
     ovs_be16 etherType;  /* network byte order */
 };

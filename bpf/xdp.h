@@ -23,8 +23,26 @@ __section("xdp")
 static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
 {
     /* TODO: see p4c-xdp project */
-    printt("return XDP_PASS\n");
+#ifdef BPF_ENABLE_IPV6
+	printt("return XDP_PASS\n");
     return XDP_PASS;
+#else
+    /* Early drop ipv6 */
+	void *data_end = (void *)(long)ctx->data_end;
+	void *data = (void *)(long)ctx->data;
+	struct ethhdr *eth = data;
+	__u16 h_proto;
+
+	if ((char *)eth + 14 > (char *)data_end)
+		return XDP_DROP;
+
+	h_proto = eth->h_proto;
+
+	if (h_proto == bpf_htons(ETH_P_IPV6)) {
+		printt("drop ipv6\n");
+		return XDP_DROP;
+	}
+#endif
 }
 
 __section("af_xdp")

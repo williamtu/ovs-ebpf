@@ -151,6 +151,7 @@ struct bpf_downcall {
 #define OVS_ACTION_ATTR_POP_ETH     15
 
 #define VLAN_CFI_MASK       0x1000 /* Canonical Format Indicator */
+#define VLAN_VID_MASK       0x0fff /* VLAN Identifier */
 #define VLAN_TAG_PRESENT    VLAN_CFI_MASK
 
 struct flow_key {
