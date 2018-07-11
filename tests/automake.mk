@@ -274,6 +274,7 @@ check-system-userspace: all
 	"$$@" || (test X'$(RECHECK)' = Xyes && "$$@" --recheck)
 
 check-bpf: all
+	$(MAKE) install
 	set $(SHELL) '$(SYSTEM_BPF_TESTSUITE)' -C tests  AUTOTEST_PATH='$(AUTOTEST_PATH)' $(TESTSUITEFLAGS) -j1; \
 	"$$@" || (test X'$(RECHECK)' = Xyes && "$$@" --recheck)
 
