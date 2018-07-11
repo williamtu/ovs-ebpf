@@ -350,7 +350,6 @@ static int ovs_parser(struct __sk_buff* skb) {
             ebpf_metadata.md.in_port = skb->ifindex;
         }
         ebpf_metadata.md.pkt_mark = skb->mark;
-        ebpf_metadata.md.packet_length = skb->len;
 
         ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key), 0);
         if (!ret) {

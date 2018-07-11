@@ -1103,7 +1103,6 @@ dpif_bpf_insert_flow(struct bpf_flow_key *flow_key,
                      struct bpf_action_batch *actions)
 {
     int err;
-    struct bpf_flow_stats flow_stats;
 
     VLOG_DBG("Insert bof_flow_key:");
     vlog_hex_dump((unsigned char *)flow_key, sizeof *flow_key);
@@ -1118,19 +1117,6 @@ dpif_bpf_insert_flow(struct bpf_flow_key *flow_key,
     if (err) {
         VLOG_ERR("Failed to add flow into flow table, map fd %d, error %s",
                  datapath.bpf.flow_table.fd, ovs_strerror(errno));
-        return errno;
-    }
-
-    flow_stats.packet_count = 1;
-    flow_stats.byte_count = flow_key->mds.md.packet_length;
-    flow_stats.used = 0;
-
-    err = bpf_map_update_elem(datapath.bpf.dp_flow_stats.fd,
-                              flow_key,
-                              &flow_stats, BPF_ANY);
-    if (err) {
-        VLOG_ERR("Failed to add flow into flow stats table, map fd %d, error %s",
-                 datapath.bpf.dp_flow_stats.fd, ovs_strerror(errno));
         return errno;
     }
 
