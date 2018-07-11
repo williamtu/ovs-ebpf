@@ -174,15 +174,20 @@ odp_action_to_bpf_action(const struct nlattr *src, struct bpf_action *dst)
         dst->u.hash = *hash_act;
         break;
     }
-    case OVS_ACTION_ATTR_SET: {
+    case OVS_ACTION_ATTR_SET:
+    case OVS_ACTION_ATTR_SET_MASKED: {
         const struct nlattr *a;
+
+        dst->is_set_tunnel = 0;
         a = nl_attr_get(src);
+        dst->u.mset.key_type = nl_attr_type(a);
 
         switch (nl_attr_type(a)) {
         case OVS_KEY_ATTR_TUNNEL: {
             enum odp_key_fitness ret;
             struct flow_tnl_t tunnel;
 
+            dst->is_set_tunnel = 1;
             tunnel.tun_id = 0;
             ret = odp_tun_to_bpf_tun(nl_attr_get(a), nl_attr_get_size(a),
                                      &tunnel);
@@ -207,20 +212,6 @@ odp_action_to_bpf_action(const struct nlattr *src, struct bpf_action *dst)
             }
             break;
         }
-        default:
-            VLOG_INFO("%s: set %d is not supported", __func__,
-                      nl_attr_type(a));
-            return EOPNOTSUPP;
-        }
-        break;
-    }
-    case OVS_ACTION_ATTR_SET_MASKED: {
-        const struct nlattr *a;
-        a = nl_attr_get(src);
-
-        dst->u.mset.key_type = nl_attr_type(a);
-
-        switch (nl_attr_type(a)) {
         case OVS_KEY_ATTR_ETHERNET: {
             struct ovs_key_ethernet *ether;
 
@@ -240,11 +231,10 @@ odp_action_to_bpf_action(const struct nlattr *src, struct bpf_action *dst)
             break;
         }
         default:
-            VLOG_INFO("%s: set_mask %d is not supported", __func__,
+            VLOG_INFO("%s: set/set_mask %d is not supported", __func__,
                       nl_attr_type(a));
             return EOPNOTSUPP;
         }
-        dst->is_set = 1;
         break;
     }
     case OVS_ACTION_ATTR_TRUNC: {
@@ -600,8 +590,8 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             ovs_be16 tci = nl_attr_get_be16(a);
             struct vlan_tag_t *vlan = inner ? &key->headers.cvlan
                                             : &key->headers.vlan;
-            vlan->tci = htons(tci);
-            key->headers.vlan.tci = htons(tci);
+            vlan->tci = ntohs(tci);
+            key->headers.vlan.tci = ntohs(tci);
             /* etherType is set below in OVS_KEY_ATTR_ETHERTYPE. */
             key->headers.valid |= VLAN_VALID;
             break;

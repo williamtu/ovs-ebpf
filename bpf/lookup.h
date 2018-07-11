@@ -52,8 +52,8 @@ static inline void ovs_execute_actions(struct __sk_buff *skb,
                action->u.userspace.nlattr_len, ovs_cb_get_ifindex(skb));
         break;
     case OVS_ACTION_ATTR_SET:
-        printt("set action, remote ipv4 = %x, is_set = %d\n",
-               action->u.tunnel.remote_ipv4, action->is_set);
+        printt("set action, is_set_tunnel = %d\n",
+               action->is_set_tunnel);
         break;
     case OVS_ACTION_ATTR_PUSH_VLAN:
         printt("vlan push tci %d\n", action->u.push_vlan.vlan_tci);

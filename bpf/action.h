@@ -317,46 +317,83 @@ static int tail_action_tunnel_set(struct __sk_buff *skb)
     struct bpf_action *action;
     struct bpf_action_batch *batch;
     struct ovs_action_set_tunnel *tunnel;
+    int key_attr;
 
     action = pre_tail_action(skb, &batch);
     if (!action)
         return TC_ACT_SHOT;
 
-    if (action->is_set) {
-        /* set_masked */
-        printt("ERR: this is set tunnel action\n");
-        return TC_ACT_SHOT;
-    }
+    /* SET for tunnel */
+    if (action->is_set_tunnel) {
+        tunnel = &action->u.tunnel;
 
-    tunnel = &action->u.tunnel;
+        /* hard-coded now, should fetch it from action->u */
+        __builtin_memset(&key, 0x0, sizeof(key));
+        key.tunnel_id = tunnel->tunnel_id;
+        key.tunnel_tos = tunnel->tunnel_tos;
+        key.tunnel_ttl = tunnel->tunnel_ttl;
 
-    /* hard-coded now, should fetch it from action->u */
-    __builtin_memset(&key, 0x0, sizeof(key));
-    key.tunnel_id = tunnel->tunnel_id;
-    key.tunnel_tos = tunnel->tunnel_tos;
-    key.tunnel_ttl = tunnel->tunnel_ttl;
+        printt("tunnel_id = %x\n", key.tunnel_id);
 
-    printt("tunnel_id = %x\n", key.tunnel_id);
+        /* TODO: handle BPF_F_DONT_FRAGMENT and BPF_F_SEQ_NUMBER */
+        flags = BPF_F_ZERO_CSUM_TX;
+        if (!tunnel->use_ipv6) {
+            key.remote_ipv4 = tunnel->remote_ipv4;
+            flags &= ~BPF_F_TUNINFO_IPV6;
+        } else {
+            memcpy(&key.remote_ipv4, &tunnel->remote_ipv4, 16);
+            flags |= BPF_F_TUNINFO_IPV6;
+        }
 
-    /* TODO: handle BPF_F_DONT_FRAGMENT and BPF_F_SEQ_NUMBER */
-    flags = BPF_F_ZERO_CSUM_TX;
-    if (!tunnel->use_ipv6) {
-        key.remote_ipv4 = tunnel->remote_ipv4;
-        flags &= ~BPF_F_TUNINFO_IPV6;
-    } else {
-        memcpy(&key.remote_ipv4, &tunnel->remote_ipv4, 16);
-        flags |= BPF_F_TUNINFO_IPV6;
-    }
-
-    ret = bpf_skb_set_tunnel_key(skb, &key, sizeof(key), flags);
-    if (ret < 0)
-        printt("ERR setting tunnel key\n");
-
-    if (tunnel->gnvopt_valid) {
-        ret = bpf_skb_set_tunnel_opt(skb, &tunnel->gnvopt,
-                                     sizeof tunnel->gnvopt);
+        ret = bpf_skb_set_tunnel_key(skb, &key, sizeof(key), flags);
         if (ret < 0)
-            printt("ERR setting tunnel opt\n");
+            printt("ERR setting tunnel key\n");
+
+        if (tunnel->gnvopt_valid) {
+            ret = bpf_skb_set_tunnel_opt(skb, &tunnel->gnvopt,
+                                         sizeof tunnel->gnvopt);
+            if (ret < 0)
+                printt("ERR setting tunnel opt\n");
+        }
+
+        return post_tail_action(skb, batch);
+    }
+
+    /* SET for packet fields */
+    key_attr = action->u.mset.key_type;
+
+    switch (key_attr) {
+    case OVS_KEY_ATTR_ETHERNET: {
+        u8 *data = (u8 *)(long)skb->data;
+        u8 *data_end = (u8 *)(long)skb->data_end;
+        struct ethhdr *eth;
+        struct ovs_key_ethernet *ether;
+        int i;
+
+        /* packet data */
+        eth = (struct ethhdr *)data;
+        if (data + sizeof(*eth) > data_end)
+            return TC_ACT_SHOT;
+
+        /* value from map */
+        ether = &action->u.mset.key.ether;
+        for (i = 0; i < 6; i++) {
+            printt("mac dest[%d]: %x -> %x\n",
+                   i, eth->h_dest[i], ether->eth_dst.ea[i]);
+            eth->h_dest[i] = ether->eth_dst.ea[i];
+        }
+        for (i = 0; i < 6; i++) {
+            printt("mac src[%d]: %x -> %x\n",
+                   i, eth->h_dest[i], ether->eth_dst.ea[i]);
+            eth->h_source[i] = ether->eth_src.ea[i];
+        }
+        break;
+    }
+    case OVS_KEY_ATTR_UNSPEC:
+    case OVS_KEY_ATTR_TUNNEL:
+    default:
+        printt("ERR: Un-implemented key attr %d in set action\n", key_attr);
+        return TC_ACT_SHOT;
     }
 
     return post_tail_action(skb, batch);
@@ -534,12 +571,15 @@ static int tail_action_set_masked(struct __sk_buff *skb)
 {
     struct bpf_action *action;
     struct bpf_action_batch *batch;
+    int key_attr;
 
     action = pre_tail_action(skb, &batch);
     if (!action)
         return TC_ACT_SHOT;
 
-    switch (action->u.mset.key_type) {
+    key_attr = action->u.mset.key_type;
+
+    switch (key_attr) {
     case OVS_KEY_ATTR_ETHERNET: {
         u8 *data = (u8 *)(long)skb->data;
         u8 *data_end = (u8 *)(long)skb->data_end;
@@ -554,10 +594,16 @@ static int tail_action_set_masked(struct __sk_buff *skb)
 
         /* value from map */
         ether = &action->u.mset.key.ether;
-        for (i = 0; i < 6; i++)
+        for (i = 0; i < 6; i++) {
+            printt("mac dest[%d]: %x -> %x\n",
+                   i, eth->h_dest[i], ether->eth_dst.ea[i]);
             eth->h_dest[i] = ether->eth_dst.ea[i];
-        for (i = 0; i < 6; i++)
+        }
+        for (i = 0; i < 6; i++) {
+            printt("mac src[%d]: %x -> %x\n",
+                   i, eth->h_dest[i], ether->eth_dst.ea[i]);
             eth->h_source[i] = ether->eth_src.ea[i];
+        }
         break;
     }
     case OVS_KEY_ATTR_IPV4: {
@@ -625,7 +671,7 @@ static int tail_action_set_masked(struct __sk_buff *skb)
 #endif
     case __OVS_KEY_ATTR_MAX:
     default:
-        printt("ERR Un-implemented set %d\n", action->type);
+        printt("ERR Un-implemented key attr %d in set_masked\n", key_attr);
         return TC_ACT_SHOT;
     }
 

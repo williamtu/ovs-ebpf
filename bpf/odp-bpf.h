@@ -228,7 +228,7 @@ struct ovs_action_userspace {
 
 struct bpf_action {
     enum ovs_action_attr type;  /* action type */
-    uint32_t is_set;
+    uint32_t is_set_tunnel; /* to distinguish between SET (tunnel) and SET_MASKED (fields) */
     union {
         struct ovs_action_output out;   /* OVS_ACTION_ATTR_OUTPUT: 8B */
         struct ovs_action_trunc trunc;  /* OVS_ACTION_ATTR_TRUNC: 4B */
