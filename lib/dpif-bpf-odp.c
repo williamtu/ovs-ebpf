@@ -615,8 +615,11 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             } else if (dl_type == htons(ETH_P_8021AD)) {
                 key->headers.cvlan.etherType = htons(ETH_P_8021AD);
                 key->headers.valid |= CVLAN_VALID;
+            } else if (dl_type == htons(ETH_P_MPLS_UC) ||
+                       dl_type == htons(ETH_P_MPLS_MC)) {
+                key->headers.valid |= MPLS_VALID;
             } else {
-                VLOG_ERR("%s dl_type %x not supported",
+                VLOG_WARN("%s dl_type %x not supported",
                           __func__, ntohs(dl_type));
             }
             break;
