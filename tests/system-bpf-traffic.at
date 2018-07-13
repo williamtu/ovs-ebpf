@@ -386,6 +386,47 @@ NS_CHECK_EXEC([at_ns0], [ping -q -c 3 -i 0.3 -w 6 10.1.1.100 | FORMAT_PING], [0]
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([datapath - ping over geneve tunnel with TLV])
+OVS_CHECK_GENEVE()
+
+OVS_TRAFFIC_VSWITCHD_START()
+ADD_BR([br-underlay])
+
+AT_CHECK([ovs-ofctl add-tlv-map br0 "{class=0xffff,type=0,len=4}->tun_metadata0"])
+AT_CHECK([ovs-ofctl --protocols=OpenFlow15 add-flow br0 "actions=set_field:0xfaceb001->tun_metadata0, normal"])
+AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
+
+ADD_NAMESPACES(at_ns0)
+
+ip link del genev_sys_6081
+on_exit 'ip link del genev_sys_6081'
+on_exit 'ip link del br-underlay'
+
+dnl Set up underlay link from host into the namespace using veth pair.
+ADD_VETH(p0, at_ns0, br-underlay, "172.31.1.1/24")
+AT_CHECK([ip addr add dev br-underlay "172.31.1.100/24"])
+AT_CHECK([ip link set dev br-underlay up])
+
+dnl Set up tunnel endpoints on OVS outside the namespace and with a native
+dnl linux device inside the namespace.
+ADD_OVS_TUNNEL([geneve], [br0], [at_gnv0], [172.31.1.1], [10.1.1.100/24], [options:key=22])
+ADD_NATIVE_TUNNEL([geneve], [ns_gnv0], [at_ns0], [172.31.1.100], [10.1.1.1/24],
+                  [vni 22])
+
+dnl First, check the underlay
+NS_CHECK_EXEC([at_ns0], [ping -q -c 3 -i 0.3 -w 2 172.31.1.100 | FORMAT_PING], [0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+dnl Okay, now check the overlay with different packet sizes
+NS_CHECK_EXEC([at_ns0], [ping -q -c 3 -i 0.3 -w 6 10.1.1.100 | FORMAT_PING], [0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
+
 AT_SETUP([datapath - ping over geneve6 tunnel])
 OVS_CHECK_GENEVE_UDP6ZEROCSUM()
 
