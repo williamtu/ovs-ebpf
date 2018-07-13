@@ -336,7 +336,6 @@ m4_define([_OVS_VSWITCHD_START],
    on_exit "kill_ovs_vswitchd `cat ovs-vswitchd.pid`"
    AT_CHECK([[sed < stderr '
 /bpf|INFO|/d
-/odp_util.*ERR/d
 /ovs_numa|INFO|Discovered /d
 /vlog|INFO|opened log file/d
 /vswitchd|INFO|ovs-vswitchd (Open vSwitch)/d
@@ -399,8 +398,8 @@ check_logs () {
 /reset by peer/d
 /Broken pipe/d
 /bpf.*|WARN/d
-/bpf.*|ERR/d
 /dpif.*|WARN/d
+/bpf.*revalidator.*|ERR/d
 /odp_util.*revalidator.*|ERR/d
 /ofproto_dpif_upcall.*|WARN/d
 /timeval.*Unreasonably long [[0-9]]*ms poll interval/d
