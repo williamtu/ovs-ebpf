@@ -16,7 +16,6 @@
  * 02110-1301, USA
  */
 #include <openvswitch/compiler.h>
-#include "ovs-p4.h"
 #include "api.h"
 #include "helpers.h"
 #include "maps.h"

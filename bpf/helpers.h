@@ -85,7 +85,7 @@ static u32 OVS_UNUSED bpf_ntohl(ovs_be32 x) {
     return __constant_ntohl((OVS_FORCE u32)x);
 }
 
-static ovs_be32 bpf_htonl(u32 x) {
+static ovs_be32 OVS_UNUSED bpf_htonl(u32 x) {
     return (OVS_FORCE ovs_be32)__constant_htonl(x);
 }
 
@@ -93,7 +93,7 @@ static u64 OVS_UNUSED bpf_ntohll(ovs_be64 x) {
     return ___constant_swab64((OVS_FORCE u64)x);
 }
 
-static ovs_be64 bpf_htonll(u64 x) {
+static ovs_be64 OVS_UNUSED bpf_htonll(u64 x) {
     return (OVS_FORCE ovs_be64)___constant_swab64(x);
 }
 

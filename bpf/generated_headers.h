@@ -18,6 +18,7 @@ typedef signed long long s64;
 typedef unsigned long long u64;
 #endif
 
+/*TODO: OVS only need addr and label */
 struct ipv6_t {
     u8 version; /* 4 bits */
     u8 trafficClass; /* 8 bits */
@@ -42,8 +43,6 @@ struct pkt_metadata_t {
 struct udp_t {
     u16 srcPort; /* 16 bits */
     u16 dstPort; /* 16 bits */
-    u16 length_; /* 16 bits */
-    u16 checksum; /* 16 bits */
 };
 struct arp_rarp_t {
     ovs_be16      ar_hrd;	/* format of hardware address   */
@@ -75,6 +74,7 @@ struct icmpv6_t {
 struct ipv4_t {
     u8 ttl; /* 8 bits */
     u8 protocol; /* 8 bits */
+    u8 tos; /* 8 bits */
     ovs_be32 srcAddr; /* 32 bits */
     ovs_be32 dstAddr; /* 32 bits */
 };
@@ -113,23 +113,20 @@ struct flow_tnl_t {
     struct gnv_opt gnvopt;
     char pad1[0]; /* 40 bits */
 };
+
+/* ovs key only needs ports and flags */
 struct tcp_t {
     ovs_be16 srcPort; /* 16 bits */
     ovs_be16 dstPort; /* 16 bits */
-    u32 seqNo; /* 32 bits */
-    u32 ackNo; /* 32 bits */
-    u8 dataOffset:4, /* 4 bits */
-       res:4; /* 4 bits */
-    u8 flags; /* 8 bits */
-    u16 window; /* 16 bits */
-    u16 checksum; /* 16 bits */
-    u16 urgentPtr; /* 16 bits */
+    ovs_be16 flags; /* 8 bits */
 };
+
 struct ethernet_t {
     char dstAddr[6]; /* 48 bits */
     char srcAddr[6]; /* 48 bits */
     ovs_be16 etherType; /* 16 bits */
 };
+
 struct vlan_tag_t {
     union {
         u16 pcp:3,
@@ -139,6 +136,7 @@ struct vlan_tag_t {
     };
     ovs_be16 etherType;  /* network byte order */
 };
+
 struct mpls_t {
     ovs_be32 top_lse; /* top label stack entry */
 };
