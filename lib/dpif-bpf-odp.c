@@ -530,7 +530,7 @@ bpf_flow_key_to_flow(const struct bpf_flow_key *key, struct flow *flow)
 
     /* L4 */
     if (hdrs->valid & TCP_VALID) {
-        flow->tcp_flags = htons(hdrs->tcp.flags);
+        flow->tcp_flags = hdrs->tcp.flags;
         flow->tp_src = hdrs->tcp.srcPort;
         flow->tp_dst = hdrs->tcp.dstPort;
     } else if (hdrs->valid & UDP_VALID) {
@@ -692,10 +692,8 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             break;
         case OVS_KEY_ATTR_TCP_FLAGS: {
             ovs_be16 flags_be = nl_attr_get_be16(a);
-            uint16_t flags = ntohs(flags_be);
 
-            key->headers.tcp.flags = flags;
-            key->headers.tcp.res = flags >> 8;
+            key->headers.tcp.flags = flags_be;
             key->headers.valid |= TCP_VALID;
             break;
         }
@@ -846,6 +844,7 @@ bpf_flow_key_format(struct ds *ds, const struct bpf_flow_key *key)
 
             ds_put_format(ds, "%sipv4(", ds_cstr(&tab));
             PUT_FIELD(ipv4, ttl, "#"PRIx8);
+            PUT_FIELD(ipv4, tos, "#"PRIx8);
             PUT_FIELD(ipv4, protocol, "#"PRIx8);
             ds_put_format(ds, "srcAddr="IP_FMT",", IP_ARGS(ipv4->srcAddr));
             ds_put_format(ds, "dstAddr="IP_FMT",", IP_ARGS(ipv4->dstAddr));
@@ -889,14 +888,7 @@ bpf_flow_key_format(struct ds *ds, const struct bpf_flow_key *key)
             ds_put_format(ds, "%stcp(", ds_cstr(&tab));
             PUT_FIELD(tcp, srcPort, PRIu16);
             PUT_FIELD(tcp, dstPort, PRIu16);
-            PUT_FIELD(tcp, seqNo, "#"PRIx32);
-            PUT_FIELD(tcp, ackNo, "#"PRIx32);
-            PUT_FIELD(tcp, dataOffset, "#"PRIx8);
-            PUT_FIELD(tcp, res, "#"PRIx8);
-            PUT_FIELD(tcp, flags, "#"PRIx8);
-            PUT_FIELD(tcp, window, "#"PRIx16);
-            PUT_FIELD(tcp, checksum, "#"PRIx16);
-            PUT_FIELD(tcp, urgentPtr, "#"PRIx16);
+            PUT_FIELD(tcp, flags, "#"PRIx16);
             ds_chomp(ds, ',');
             ds_put_format(ds, ")\n");
         }
@@ -906,8 +898,6 @@ bpf_flow_key_format(struct ds *ds, const struct bpf_flow_key *key)
             ds_put_format(ds, "%sudp(", ds_cstr(&tab));
             PUT_FIELD(udp, srcPort, PRIu16);
             PUT_FIELD(udp, dstPort, PRIu16);
-            PUT_FIELD(udp, length_, "#"PRIx16);
-            PUT_FIELD(udp, checksum, "#"PRIx16);
             ds_chomp(ds, ',');
             ds_put_format(ds, ")\n");
         }
