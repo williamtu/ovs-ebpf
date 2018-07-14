@@ -318,6 +318,7 @@ OVS_CHECK_GRE()
 
 OVS_TRAFFIC_VSWITCHD_START()
 ADD_BR([br-underlay])
+on_exit 'ip link del br-underlay'
 
 AT_CHECK([ovs-ofctl add-flow br0 "actions=normal"])
 AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])

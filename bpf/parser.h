@@ -16,392 +16,322 @@
  * 02110-1301, USA
  */
 
-/*
- * Protocol parser generated from P4 1.0
- */
 #include "ovs-p4.h"
 #include "api.h"
 #include "helpers.h"
 #include "maps.h"
 #include <linux/if_ether.h>
+#include <linux/if_arp.h>
 #include <linux/if_vlan.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <linux/icmp.h>
+
+#define TCP_FLAGS_BE16(tp) (*(__be16 *)&tcp_flag_word(tp) & bpf_htons(0x0FFF))
+
+static bool ipv6_has_ext(u8 nw_proto) {
+    if ((nw_proto == IPPROTO_HOPOPTS) ||
+          (nw_proto == IPPROTO_ROUTING) ||
+          (nw_proto == IPPROTO_DSTOPTS) ||
+          (nw_proto == IPPROTO_AH) ||
+          (nw_proto == IPPROTO_FRAGMENT)) {
+            return true;
+    }
+    return false;
+}
 
 __section_tail(PARSER_CALL)
 static int ovs_parser(struct __sk_buff* skb) {
-    struct ebpf_headers_t ebpf_headers = {};
-    struct ebpf_metadata_t ebpf_metadata = {};
-    unsigned skbOffsetInBits = 0;
-    enum ErrorCode ebpf_error = p4_pe_no_error;
+    void *data = (void *)(long)skb->data;
+    struct ebpf_headers_t hdrs = {};
+    struct ebpf_metadata_t metadata = {};
+    struct bpf_tunnel_key key;
+    struct ethhdr *eth;
+    ovs_be16 eth_proto;
     u32 ebpf_zero = 0;
     int offset = 0;
-    void *data = (void *)(long)skb->data;
-    struct ethhdr *eth = data;
+    u8 nw_proto = 0;
+    int err = 0, ret = 0;
 
+    /* Verifier Check. */
     if ((char *)data + sizeof(*eth) > (char *)(long)skb->data_end) {
-        return 0;
+        printt("ERR parsing ethernet\n");
+        return TC_ACT_SHOT;
     }
 
-    ebpf_headers.valid = 0;
-    printt("proto = %x len = %d vlan_tci = %x\n",
-           eth->h_proto, skb->len, (int)skb->vlan_tci);
+    eth = data;
+    if (eth->h_proto == 0) {
+        printt("eth_proto == 0, return TC_ACT_OK\n");
+        return TC_ACT_OK;
+    }
+
+    printt("eth_proto = 0x%x len = %d\n", bpf_ntohs(eth->h_proto), skb->len);
+    printt("skb->protocol = 0x%x\n", skb->protocol);
     printt("skb->ingress_ifindex %d skb->ifindex %d\n",
            skb->ingress_ifindex, skb->ifindex);
 
-    if (skb->cb[OVS_CB_ACT_IDX] != 0) {
-        printt("this is a downcall packet\n");
-    }
-
-    if (skb_load_bytes(skb, offset, &ebpf_headers.ethernet, 14) < 0) {
-        ebpf_error = p4_pe_header_too_short;
+    /* Link Layer. */
+    if (skb_load_bytes(skb, offset, &hdrs.ethernet, sizeof(hdrs.ethernet)) < 0) {
+        err = p4_pe_header_too_short;
+        printt("ERR: load byte %d\n", __LINE__);
         goto end;
     }
-    ebpf_headers.valid |= ETHER_VALID;
-    offset += 14;
-    skbOffsetInBits = offset * 8;
+    offset += sizeof(hdrs.ethernet);
+    hdrs.valid |= ETHER_VALID;
 
-    /* vlan_tci is in host byte order. */
+    /* VLAN 8021Q (0x8100) or 8021AD (0x8a88) in metadata
+     * note: vlan in metadata is always the outer vlan
+     */
     if (skb->vlan_tci) {
-        ebpf_headers.vlan.tci = skb->vlan_tci | VLAN_TAG_PRESENT;
-        ebpf_headers.vlan.etherType = skb->vlan_proto;
-        ebpf_headers.valid |= VLAN_VALID;
-        printt("vlan proto %x tci %x\n", skb->vlan_proto, skb->vlan_tci);
+        hdrs.vlan.tci = skb->vlan_tci | VLAN_TAG_PRESENT; /* host byte order */
+        hdrs.vlan.etherType = skb->vlan_proto;
+        hdrs.valid |= VLAN_VALID;
+
+        printt("skb metadata: vlan proto 0x%x tci %x\n", bpf_ntohs(skb->vlan_proto), skb->vlan_tci);
     }
 
-    u32 tmp_3 = eth->h_proto;
-    if (tmp_3 == 0x0081 || tmp_3 == 0xA888) {
-        if (ebpf_headers.valid & VLAN_VALID) {
-            goto parse_cvlan;
-        }
-        printt("Nested vlan? not supported!\n");
-    } if (tmp_3 == 0x0608) {
-        goto parse_arp;
-    } if (tmp_3 == 0x0008) {
-        goto parse_ipv4;
-    } if (tmp_3 == 0xDD86) {
-        goto parse_ipv6;
-    } else {
-        goto ovs_tbl_4;
-    }
+    eth_proto = eth->h_proto;
 
-    /* Two cases:
-     * 4-byte 8021AD (0x8a88), then 4-byte 8021Q, or
-     * 4-byte 8021Q only
-     */
+    if (eth->h_proto == bpf_htons(ETH_P_8021Q)){
 
-    /* 8021Q is always in skb metadata, not in packet data,
-     * so we don't need to parse it.
-     */
-#if 0
-    parse_vlan: {
-        struct vlan_tag_t *vlan = &ebpf_headers.vlan;
-        if (skb_load_bytes(skb, offset, &vlan, 4) < 0) {
-            ebpf_error = p4_pe_header_too_short;
+        /* The inner, if exists, is VLAN 8021Q (0x8100) */
+        struct vlan_hdr { /* wired format */
+            ovs_be16 tci;
+            ovs_be16 ethertype;
+        } cvlan;
+
+        /* parse cvlan */
+        if (skb_load_bytes(skb, offset - 2, &cvlan, sizeof(cvlan)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        printt("parsing vlan\n");
-        offset += 4;
-        skbOffsetInBits = offset * 8;
+        offset += sizeof(hdrs.cvlan);
+        hdrs.valid |= CVLAN_VALID;
 
-        {
-            u32 tmp_5 = ebpf_headers.vlan.etherType;
-            if (tmp_5 == 0x0608)
-                goto parse_arp;
-            if (tmp_5 == 0x0008)
-                goto parse_ipv4;
-            if (tmp_5 == 0xDD86)
-                goto parse_ipv6;
-            if (tmp_5 == 0x0081 || tmp_5 == 0xA888) {
-                printt("not support layer-3 vlan");
-                goto parse_cvlan;
-            } else
-                goto ovs_tbl_4;
-        }
-    }
-#endif
-    parse_cvlan: {
-        if (skb_load_bytes(skb, offset, &ebpf_headers.cvlan, 4) < 0) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        printt("parsing cvlan\n");
-        offset += 4;
-        skbOffsetInBits = offset * 8;
-        ebpf_headers.valid |= CVLAN_VALID;
-        u32 tmp_5 = ebpf_headers.cvlan.etherType;
-        if (tmp_5 == 0x0608)
-            goto parse_arp;
-        if (tmp_5 == 0x0008)
-            goto parse_ipv4;
-        if (tmp_5 == 0xDD86)
-            goto parse_ipv6;
-        if (tmp_5 == 0x0081) {
-            ebpf_error = p4_pe_too_many_encap;
-            goto end;
-        }
-        else
-            goto ovs_tbl_4;
-    }
-    parse_arp: {
-        struct arp_rarp_t *arp = &ebpf_headers.arp;
-        if (skb_load_bytes(skb, offset, arp, sizeof ebpf_headers.arp) < 0) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        if (arp->ar_hrd == 0x0100 &&
-            arp->ar_pro == 0x0008 &&
-            arp->ar_hln == 6 &&
-            arp->ar_pln == 4) {
+        hdrs.cvlan.tci = bpf_ntohs(cvlan.tci);
+        hdrs.cvlan.etherType = cvlan.ethertype;
 
-            printt("valid arp\n");
-        } else {
-            printt("Invalid arp\n");
-        }
-        offset += sizeof ebpf_headers.arp;
-        skbOffsetInBits = offset * 8;
-        ebpf_headers.valid |= ARP_VALID;
-        goto ovs_tbl_4;
+        printt("vlan tci 0x%x ethertype 0x%x\n",
+               hdrs.cvlan.tci, bpf_ntohs(hdrs.cvlan.etherType));
+
+        skb_load_bytes(skb, offset - 2, &eth_proto, 2);
+        printt("eth_proto = 0x%x\n", bpf_ntohs(eth_proto));
     }
-    parse_ipv4: {
+
+    /* Network Layer.
+     *   see key_extract() in net/openvswitch/flow.c */
+    if (eth_proto == bpf_htons(ETH_P_IP)) {
         struct iphdr nh;
-        if (skb_load_bytes(skb, offset, &nh, 20) < 0) {
-            ebpf_error = p4_pe_header_too_short;
+
+        printt("parse ipv4\n");
+        if (skb_load_bytes(skb, offset, &nh, sizeof(nh)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
         offset += nh.ihl * 4;
-        ebpf_headers.ipv4.ttl = nh.ttl;
-        ebpf_headers.ipv4.protocol = nh.protocol;
-        ebpf_headers.ipv4.srcAddr = nh.saddr;
-        ebpf_headers.ipv4.dstAddr = nh.daddr;
-        skbOffsetInBits = offset * 8;
-        ebpf_headers.valid |= IPV4_VALID;
-        u32 tmp_6 = ebpf_headers.ipv4.protocol;
-        if (tmp_6 == 6)
-            goto parse_tcp;
-        if (tmp_6 == 17)
-            goto parse_udp;
-        if (tmp_6 == 1)
-            goto parse_icmp;
-        else
-            goto ovs_tbl_4;
+        hdrs.valid |= IPV4_VALID;
+
+        hdrs.ipv4.ttl = nh.ttl;                /* u8 */
+        hdrs.ipv4.tos = nh.tos;                /* u8 */
+        hdrs.ipv4.protocol = nh.protocol;     /* u8*/
+        hdrs.ipv4.srcAddr = nh.saddr;        /* be32 */
+        hdrs.ipv4.dstAddr = nh.daddr;        /* be32 */
+
+        nw_proto = hdrs.ipv4.protocol;
+        printt("next proto 0x%x\n", nw_proto);
+
+    } else if (eth_proto == bpf_htons(ETH_P_ARP) ||
+               eth_proto == bpf_htons(ETH_P_RARP)) {
+        struct arp_rarp_t *arp;
+
+        printt("parse arp/rarp\n");
+
+        /* the struct arp_rarp_t is wired format */
+        arp = &hdrs.arp;
+        if (skb_load_bytes(skb, offset, arp, sizeof(hdrs.arp)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
+            goto end;
+        }
+        offset += sizeof(hdrs.arp);
+        hdrs.valid |= ARP_VALID;
+
+        if (arp->ar_hrd == bpf_htons(ARPHRD_ETHER) &&
+            arp->ar_pro == bpf_htons(ETH_P_IP) &&
+            arp->ar_hln == ETH_ALEN &&
+            arp->ar_pln == 4) {
+            printt("valid arp\n");
+        } else {
+            printt("ERR: invalid arp\n");
+        }
+        goto parse_metadata;
+
+    } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
+
+        struct ipv6hdr ip6hdr;    /* wired format */
+
+        if (skb_load_bytes(skb, offset, &ip6hdr, sizeof(ip6hdr)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
+            goto end;
+        }
+        offset += sizeof(struct ipv6hdr); /* wired format */
+        hdrs.valid |= IPV6_VALID;
+
+        printt("parse ipv6\n");
+
+        memcpy(&hdrs.ipv6.flowLabel, &ip6hdr.flow_lbl, 4); //FIXME
+        memcpy(&hdrs.ipv6.srcAddr, &ip6hdr.saddr, 16);
+        memcpy(&hdrs.ipv6.dstAddr, &ip6hdr.daddr, 16);
+
+        nw_proto = ip6hdr.nexthdr;
+
+        if (ipv6_has_ext(nw_proto)) {
+            printt("WARN: ipv6 nexthdr %x does not supported\n", nw_proto);
+            // need to update offset
+        }
+
+        printt("next proto = %x\n", nw_proto);
+
+    } else {
+        printt("ERR: eth_proto %x not supported\n", bpf_ntohs(eth_proto));
+        return TC_ACT_OK;
     }
-    parse_ipv6: {
+
+    /* Transport Layer.
+     *   Handle: TCP, UDP, ICMP
+     */
+    if (nw_proto == IPPROTO_TCP) {
+        struct tcphdr tcp;
+
+        if (skb_load_bytes(skb, offset, &tcp, sizeof(tcp)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
+            goto end;
+        }
+        hdrs.valid |= TCP_VALID;
+
+        hdrs.tcp.srcPort = tcp.source;
+        hdrs.tcp.dstPort = tcp.dest;
+        hdrs.tcp.flags = TCP_FLAGS_BE16(&tcp);
+
+        printt("parse tcp src %d dst %d\n", bpf_ntohs(tcp.source), bpf_ntohs(tcp.dest));
+
+    } else if (nw_proto == IPPROTO_UDP) {
+        struct udphdr udp;
+
+        if (skb_load_bytes(skb, offset, &udp, sizeof(udp)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
+            goto end;
+        }
+        hdrs.valid |= UDP_VALID;
+
+        hdrs.udp.srcPort = udp.source;
+        hdrs.udp.dstPort = udp.dest;
+
+        printt("parse udp src %d dst %d\n", bpf_ntohs(udp.source), bpf_ntohs(udp.dest));
+
+    } else if (nw_proto == IPPROTO_ICMP) {  /* ICMP v4 */
+        struct icmphdr icmp;
+
+        if (skb_load_bytes(skb, offset, &icmp, sizeof(icmp)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
+            goto end;
+        }
+        hdrs.valid |= ICMP_VALID;
+
+        hdrs.icmp.type = icmp.type;
+        hdrs.icmp.code = icmp.code;
+
+        printt("parse icmp type %d code %d\n", icmp.type, icmp.code);
+
+    } else if (nw_proto == 0x3a /*EXTHDR_ICMP*/) {    /* ICMP v6 */
+        struct icmphdr icmp;
+
+        if (skb_load_bytes(skb, offset, &icmp, sizeof(icmp)) < 0) {
+            err = p4_pe_header_too_short;
+            printt("ERR: load byte %d\n", __LINE__);
+            goto end;
+        }
+        hdrs.valid |= ICMPV6_VALID;
+
+        hdrs.icmpv6.type = icmp.type;
+        hdrs.icmpv6.code = icmp.code;
+
+        printt("parse icmp v6 type %d code %d\n", icmp.type, icmp.code);
+    } else if (nw_proto == IPPROTO_GRE) {
+        printt("receive gre packet\n");
+    } else {
+        printt("WARN: nw_proto 0x%x not parsed\n", nw_proto);
+        /* Continue */
+    }
+
+parse_metadata:
+    metadata.md.skb_priority = skb->priority;
+
+    /* Don't use ovs_cb_get_ifindex(), that gets optimized into something
+     * that can't be verified. >:( */
+    if (skb->cb[OVS_CB_INGRESS]) {
+        metadata.md.in_port = skb->ingress_ifindex;
+    }
+    if (!skb->cb[OVS_CB_INGRESS]) {
+        metadata.md.in_port = skb->ifindex;
+    }
+    metadata.md.pkt_mark = skb->mark;
+
+    ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key), 0);
+    if (!ret) {
+        printt("bpf_skb_get_tunnel_key id = %d ipv4\n", key.tunnel_id);
+        metadata.tnl_md.tun_id = key.tunnel_id;
+        metadata.tnl_md.ip4.ip_src = key.remote_ipv4;
+        metadata.tnl_md.ip_tos = key.tunnel_tos;
+        metadata.tnl_md.ip_ttl = key.tunnel_ttl;
+        metadata.tnl_md.use_ipv6 = 0;
+        metadata.tnl_md.flags = 0;
 #ifdef BPF_ENABLE_IPV6
-        if (skb->len < BYTES(skbOffsetInBits + 4)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        ebpf_headers.ipv6.version = ((load_byte(skb, (skbOffsetInBits + 0) / 8)) >> (4)) & EBPF_MASK(u8, 4);
-        skbOffsetInBits += 4;
-        if (skb->len < BYTES(skbOffsetInBits + 8)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        //ebpf_headers.ipv6.trafficClass = ((load_half(skb, (skbOffsetInBits + 0) / 8)) >> (4)) & EBPF_MASK(u16, 8);
-        ebpf_headers.ipv6.trafficClass = 0;
-        skbOffsetInBits += 8;
-        if (skb->len < BYTES(skbOffsetInBits + 20)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        ebpf_headers.ipv6.flowLabel = ((load_word(skb, (skbOffsetInBits + 0) / 8)) >> (8)) & EBPF_MASK(u32, 20);
-        skbOffsetInBits += 20;
-        if (skb->len < BYTES(skbOffsetInBits + 16)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        //ebpf_headers.ipv6.payloadLen = ((load_half(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        ebpf_headers.ipv6.payloadLen = 0;
-        skbOffsetInBits += 16;
-        if (skb->len < BYTES(skbOffsetInBits + 8)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        ebpf_headers.ipv6.nextHdr = ((load_byte(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        skbOffsetInBits += 8;
-        if (skb->len < BYTES(skbOffsetInBits + 8)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        //ebpf_headers.ipv6.hopLimit = ((load_byte(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        ebpf_headers.ipv6.hopLimit = 0;
-        skbOffsetInBits += 8;
-        if (skb->len < BYTES(skbOffsetInBits + 8*16*2)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        if (skb_load_bytes(skb, skbOffsetInBits/8, &ebpf_headers.ipv6.srcAddr, 32) < 0) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        skbOffsetInBits += 8*16*2;;
-        ebpf_headers.valid |= IPV6_VALID;
-        u32 tmp_7 = ebpf_headers.ipv6.nextHdr;
-        printt("ipv6 proto %d\n", tmp_7);
-        if (tmp_7 == 6)
-            goto parse_tcp;
-        if (tmp_7 == 17)
-            goto parse_udp;
-        if (tmp_7 == 58)
-            goto parse_icmpv6;
-        if (tmp_7 == 41 || tmp_7 == 43 || tmp_7 == 44 || tmp_7 == 51) {
-            printt("icmpv6 extension header not support");
-            return TC_ACT_SHOT;
-        }
-        else {
-            printt("ipv6 proto %x not parsed\n");
-            goto ovs_tbl_4;
-        }
-#else
-        ebpf_error = p4_pe_ipv6_disabled;
-        goto end;
-#endif
-    }
-    parse_tcp: {
-        if (skb_load_bytes(skb, offset, &ebpf_headers.tcp, 4) < 0) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        offset += sizeof ebpf_headers.tcp - 1;
-
-        skbOffsetInBits = offset * 8;
-        ebpf_headers.valid |= TCP_VALID;
-        goto ovs_tbl_4;
-    }
-    parse_udp: {
-        if (skb->len < BYTES(skbOffsetInBits + 16)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        ebpf_headers.udp.srcPort = ((load_half(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        skbOffsetInBits += 16;
-        if (skb->len < BYTES(skbOffsetInBits + 16)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        ebpf_headers.udp.dstPort = ((load_half(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        skbOffsetInBits += 16;
-        if (skb->len < BYTES(skbOffsetInBits + 16)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        //ebpf_headers.udp.length_ = ((load_half(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        ebpf_headers.udp.length_ = 0;
-        skbOffsetInBits += 16;
-        if (skb->len < BYTES(skbOffsetInBits + 16)) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        // Remove from key
-        // ebpf_headers.udp.checksum = ((load_half(skb, (skbOffsetInBits + 0) / 8)) >> (0));
-        ebpf_headers.udp.checksum = 0;
-        skbOffsetInBits += 16;
-        ebpf_headers.valid |= UDP_VALID;
-        goto ovs_tbl_4;
-    }
-    parse_icmp: {
-        if (skb_load_bytes(skb, offset, &ebpf_headers.icmp, 2) < 0) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        printt("icmp type = %x code = %x\n", ebpf_headers.icmp.type,
-               ebpf_headers.icmp.code);
-
-#if 0	/* the ICMP packet might be ip fragment */
-		if (ebpf_headers.ipv4.flags & IP_FRAGMENT) {
-            ebpf_headers.icmp.type = 0;
-            ebpf_headers.icmp.code = 0;
-        }
-#endif
-        offset += 8;
-        skbOffsetInBits = offset * 8;
-        ebpf_headers.valid |= ICMP_VALID;
-        goto ovs_tbl_4;
-    }
-#ifdef BPF_ENABLE_IPV6
-    parse_icmpv6: {
-        if (skb_load_bytes(skb, offset, &ebpf_headers.icmpv6,
-                           sizeof(struct icmpv6_t)) < 0) {
-            ebpf_error = p4_pe_header_too_short;
-            goto end;
-        }
-        printt("icmpv6 type = %x code = %x\n", ebpf_headers.icmpv6.type,
-               ebpf_headers.icmpv6.code);
-
-        offset += 16;
-        skbOffsetInBits = offset * 8;
-        ebpf_headers.valid |= ICMPV6_VALID;
-        goto ovs_tbl_4;
-    }
-#endif
-
-    /* Most of the code are generated by P4C-EBPF
-       Manual code starts here */
-    ovs_tbl_4:
-    {
-        int ret;
-        struct bpf_tunnel_key key;
-
-        ebpf_metadata.md.skb_priority = skb->priority;
-
-        /* Don't use ovs_cb_get_ifindex(), that gets optimized into something
-         * that can't be verified. >:( */
-        if (skb->cb[OVS_CB_INGRESS]) {
-            ebpf_metadata.md.in_port = skb->ingress_ifindex;
-        }
-        if (!skb->cb[OVS_CB_INGRESS]) {
-            ebpf_metadata.md.in_port = skb->ifindex;
-        }
-        ebpf_metadata.md.pkt_mark = skb->mark;
-
-        ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key), 0);
+    } else if (ret == -EPROTO) {
+        ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key),
+                                     BPF_F_TUNINFO_IPV6);
         if (!ret) {
-            printt("bpf_skb_get_tunnel_key id = %d ipv4\n", key.tunnel_id);
-            ebpf_metadata.tnl_md.tun_id = key.tunnel_id;
-            ebpf_metadata.tnl_md.ip4.ip_src = key.remote_ipv4;
-            ebpf_metadata.tnl_md.ip_tos = key.tunnel_tos;
-            ebpf_metadata.tnl_md.ip_ttl = key.tunnel_ttl;
-            ebpf_metadata.tnl_md.use_ipv6 = 0;
-            ebpf_metadata.tnl_md.flags = 0;
-#ifdef BPF_ENABLE_IPV6
-        } else if (ret == -EPROTO) {
-            ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key),
-                                         BPF_F_TUNINFO_IPV6);
-            if (!ret) {
-                printt("bpf_skb_get_tunnel_key id = %d ipv6\n", key.tunnel_id);
-                ebpf_metadata.tnl_md.tun_id = key.tunnel_id;
-                memcpy(&ebpf_metadata.tnl_md.ip6.ipv6_src, &key.remote_ipv4, 16);
-                ebpf_metadata.tnl_md.ip_tos = key.tunnel_tos;
-                ebpf_metadata.tnl_md.ip_ttl = key.tunnel_ttl;
-                ebpf_metadata.tnl_md.use_ipv6 = 1;
-                ebpf_metadata.tnl_md.flags = 0;
-            }
+            printt("bpf_skb_get_tunnel_key id = %d ipv6\n", key.tunnel_id);
+            metadata.tnl_md.tun_id = key.tunnel_id;
+            memcpy(&metadata.tnl_md.ip6.ipv6_src, &key.remote_ipv4, 16);
+            metadata.tnl_md.ip_tos = key.tunnel_tos;
+            metadata.tnl_md.ip_ttl = key.tunnel_ttl;
+            metadata.tnl_md.use_ipv6 = 1;
+            metadata.tnl_md.flags = 0;
+        }
 #endif
-        }
+    }
 
-        if (!ret) {
-            ret = bpf_skb_get_tunnel_opt(skb, &ebpf_metadata.tnl_md.gnvopt,
-                                         sizeof ebpf_metadata.tnl_md.gnvopt);
-            if (ret > 0)
-                ebpf_metadata.tnl_md.gnvopt_valid = 1;
-            printt("bpf_skb_get_tunnel_opt ret = %d\n", ret);
-        }
+    if (!ret) {
+        ret = bpf_skb_get_tunnel_opt(skb, &metadata.tnl_md.gnvopt,
+                                     sizeof metadata.tnl_md.gnvopt);
+        if (ret > 0)
+            metadata.tnl_md.gnvopt_valid = 1;
+        printt("bpf_skb_get_tunnel_opt ret = %d\n", ret);
     }
 
 end:
-    if (ebpf_error != p4_pe_no_error) {
-        printt("parse error, drop\n";);
+    if (err != p4_pe_no_error) {
+        printt("parse error: %d, drop\n", err);
         return TC_ACT_SHOT;
     }
 
     /* write flow key and md to key map */
     printt("Parser: updating flow key\n");
     bpf_map_update_elem(&percpu_headers,
-                        &ebpf_zero, &ebpf_headers, BPF_ANY);
+                        &ebpf_zero, &hdrs, BPF_ANY);
 
     if (ovs_cb_is_initial_parse(skb)) {
         bpf_map_update_elem(&percpu_metadata,
-                            &ebpf_zero, &ebpf_metadata, BPF_ANY);
+                            &ebpf_zero, &metadata, BPF_ANY);
     }
     skb->cb[OVS_CB_ACT_IDX] = 0;
 
