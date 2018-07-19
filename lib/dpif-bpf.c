@@ -43,6 +43,9 @@
 VLOG_DEFINE_THIS_MODULE(dpif_bpf);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(60, 60);
 
+#define FLOW_DUMP_MAX_BATCH 50
+#define FLOW_DUMP_BUF_SIZE  2048
+
 /* Protects against changes to 'bpf_datapaths'. */
 static struct ovs_mutex bpf_datapath_mutex = OVS_MUTEX_INITIALIZER;
 
@@ -1002,10 +1005,16 @@ dpif_bpf_flow_dump_destroy(struct dpif_flow_dump *dump_)
     return status == ENOENT ? 0 : status;
 }
 
+struct dpif_bpf_flow_buf {
+    uint32_t buf[DIV_ROUND_UP(FLOW_DUMP_BUF_SIZE, 4)];
+};
+
 struct dpif_bpf_flow_dump_thread {
     struct dpif_flow_dump_thread up;
     struct dpif_bpf_flow_dump *dump;
-    struct ofpbuf buf;  /* Stores key,mask,acts for a particular dump. */
+
+    /* (Key/Mask/Actions) Buffers for netdev dumping */
+    struct dpif_bpf_flow_buf buf[FLOW_DUMP_MAX_BATCH];
 };
 
 static struct dpif_bpf_flow_dump_thread *
@@ -1023,7 +1032,6 @@ dpif_bpf_flow_dump_thread_create(struct dpif_flow_dump *dump_)
     thread = xmalloc(sizeof *thread);
     dpif_flow_dump_thread_init(&thread->up, &dump->up);
     thread->dump = dump;
-    ofpbuf_init(&thread->buf, 1024);
     return &thread->up;
 }
 
@@ -1032,7 +1040,6 @@ dpif_bpf_flow_dump_thread_destroy(struct dpif_flow_dump_thread *thread_)
 {
     struct dpif_bpf_flow_dump_thread *thread =
         dpif_bpf_flow_dump_thread_cast(thread_);
-    ofpbuf_uninit(&thread->buf);
     free(thread);
 }
 
@@ -1201,6 +1208,10 @@ dpif_bpf_flow_dump_next(struct dpif_flow_dump_thread *thread_,
 
     while (n <= max_flows) {
         struct dpif_bpf_dp *dp = get_dpif_bpf_dp(dump->up.dpif);
+        struct dpif_bpf_flow_buf *buf = &thread->buf[n];
+        struct ofpbuf flow_buf;
+
+        ofpbuf_use_stack(&flow_buf, buf, sizeof *buf);
 
         err = bpf_map_get_next_key(datapath.bpf.flow_table.fd,
                                    &dump->pos, &dump->pos);
@@ -1208,7 +1219,7 @@ dpif_bpf_flow_dump_next(struct dpif_flow_dump_thread *thread_,
             err = errno;
             break;
         }
-        err = fetch_flow(dp, &flows[n], &thread->buf, &dump->pos);
+        err = fetch_flow(dp, &flows[n], &flow_buf, &dump->pos);
         if (err == ENOENT) {
             /* Flow disappeared. Oh well, we tried. */
             continue;
