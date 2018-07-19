@@ -42,7 +42,8 @@
 
 #include "api.h"
 #include "openvswitch.h"
-#include "ovs-p4.h"
+#include "helpers.h"
+#include "generated_headers.h"
 
 /* ovs-vswitchd as a writer will update these maps.
  * bpf datapath as reader lookup and processes */
