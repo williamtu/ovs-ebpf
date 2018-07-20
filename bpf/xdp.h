@@ -18,10 +18,34 @@
 #include "api.h"
 #include "helpers.h"
 
+#define OVS_LOAD_BYTES(xdp, offset, dst, len) \
+({ \
+    int ___ret = 0; \
+    if ((char *)(long)xdp->data + offset + len > (char *)(long)xdp->data_end) { \
+        printt("ERR: xdp load byte too short\n"); \
+        return XDP_DROP; \
+    } \
+    memcpy(dst, (char *)(long)xdp->data + offset, len); \
+    ___ret; \
+})
+#define OVS_SK_BUFF xdp_md
+#define PARSE_DATA xdp_parse_data
+#include "parser_common.h"
+#undef OVS_LOAD_BYTES
+#undef OVS_SK_BUFF
+#undef PARSE_DATA
+
+/* Program: xdp */
 __section("xdp")
 static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
 {
-    /* TODO: see p4c-xdp project */
+    printt("=== enter xdp_ingress ===\n");
+
+    /* if a netdev supports xdp, parse the packet data
+     * first, and save in map percpu_headers
+     */
+    xdp_parse_data(ctx);
+
 #ifdef BPF_ENABLE_IPV6
 	printt("return XDP_PASS\n");
     return XDP_PASS;
@@ -50,3 +74,4 @@ static int af_xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
     /* TODO: see xdpsock_kern.c ans xdpsock_user.c */
     return XDP_PASS;
 }
+

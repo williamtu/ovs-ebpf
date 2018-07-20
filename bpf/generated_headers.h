@@ -172,8 +172,8 @@ struct ebpf_headers_t {
         struct icmp_t icmp;
         struct icmpv6_t icmpv6;
     };
-    struct vlan_tag_t vlan;
-    struct vlan_tag_t cvlan;
+    struct vlan_tag_t vlan;  /* outer */
+    struct vlan_tag_t cvlan; /* inner */
 };
 struct ebpf_metadata_t {
     struct pkt_metadata_t md;
