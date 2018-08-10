@@ -10,7 +10,8 @@ bpf_headers = \
 	bpf/lookup.h \
 	bpf/action.h \
 	bpf/generated_headers.h \
-	bpf/xdp.h
+	bpf/xdp.h \
+	bpf/parser_common.h
 bpf_extra = \
 	bpf/ovs-proto.p4
 
