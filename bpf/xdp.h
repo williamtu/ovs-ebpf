@@ -68,10 +68,34 @@ static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
 #endif
 }
 
-__section("af_xdp")
-static int af_xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
-{
-    /* TODO: see xdpsock_kern.c ans xdpsock_user.c */
-    return XDP_PASS;
-}
+#define AFXDP_REDIRECT(xskmap) { \
+    int idx = 0; \
+    int flags = 0; \
+    int len = (long)ctx->data_end - (long)ctx->data; \
+    printt("ingress_ifindex %d rx_queue_index %d pkt len %d\n", \
+            ctx->ingress_ifindex, ctx->rx_queue_index, len); \
+    printt("send to queue xsk queue 0\n"); \
+    return bpf_redirect_map(xskmap, idx, flags); \
+}\
 
+/* For AFXDP, we need one map and one afxdp program per netdev */
+__section("afxdp0")
+static int af_xdp_ingress0(struct xdp_md *ctx OVS_UNUSED)
+{
+    AFXDP_REDIRECT(&xsks_map0);
+}
+__section("afxdp1")
+static int af_xdp_ingress1(struct xdp_md *ctx OVS_UNUSED)
+{
+    AFXDP_REDIRECT(&xsks_map1);
+}
+__section("afxdp2")
+static int af_xdp_ingress2(struct xdp_md *ctx OVS_UNUSED)
+{
+    AFXDP_REDIRECT(&xsks_map2);
+}
+__section("afxdp3")
+static int af_xdp_ingress3(struct xdp_md *ctx OVS_UNUSED)
+{
+    AFXDP_REDIRECT(&xsks_map3);
+}

@@ -38,6 +38,7 @@ struct bpf_map {
 struct bpf_state;
 struct ds;
 
+#define MAX_AFXDP_DEV 4 /* Max number of supported AFXDP netdev */
 #define BPF_MAX_PROG_ARRAY 64
 struct bpf_state {
     /* File descriptors for programs. */
@@ -46,14 +47,15 @@ struct bpf_state {
     struct bpf_prog downcall;           /* BPF_PROG_TYPE_SCHED_CLS */
     struct bpf_prog tailarray[BPF_MAX_PROG_ARRAY];
     struct bpf_prog xdp;                /* BPF_PROG_TYPE_XDP */
-    // william: struct bpf_prog parser, deparser, action,
-
+    struct bpf_prog afxdp[MAX_AFXDP_DEV];  /* BPF_PROG_TYPE_XDP:
+                                           each netdev need one */
     struct bpf_map upcalls;             /* BPF_MAP_TYPE_PERF_ARRAY */
     struct bpf_map flow_table;          /* BPF_MAP_TYPE_HASH */
     struct bpf_map datapath_stats;      /* BPF_MAP_TYPE_ARRAY */
     struct bpf_map tailcalls;           /* BPF_PROG_TYPE_PROG_ARRARY */
     struct bpf_map execute_actions;     /* BPF_MAP_TYPE_ARRAY */
     struct bpf_map dp_flow_stats;       /* BPF_MAP_TYPE_HASH */
+    struct bpf_map xsks_map[MAX_AFXDP_DEV];     /* BPF_MAP_TYPE_XSKMAP */
 };
 
 int bpf_get(struct bpf_state *state, bool verbose);

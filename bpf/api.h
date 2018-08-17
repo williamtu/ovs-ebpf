@@ -131,6 +131,12 @@
               sizeof(uint32_t), pin, __NR_CPUS__)
 #endif
 
+#ifndef BPF_XSKMAP
+# define BPF_XSKMAP(name, max_elem) \
+    __BPF_MAP(name, BPF_MAP_TYPE_XSKMAP, 0, sizeof(int), \
+              sizeof(int), 1, max_elem)
+#endif
+
 /** Classifier helper */
 
 #ifndef BPF_H_DEFAULT

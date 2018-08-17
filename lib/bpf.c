@@ -174,6 +174,7 @@ bpf_format_state(struct ds *ds, struct bpf_state *state)
     bpf_format_prog(ds, &state->egress);
     bpf_format_prog(ds, &state->ingress);
     bpf_format_prog(ds, &state->xdp);
+    //bpf_format_prog(ds, &state->afxdp);
 }
 
 /* Populates 'state' with the standard set of programs and maps for openvswitch
@@ -194,6 +195,10 @@ bpf_get(struct bpf_state *state, bool verbose)
         {&state->egress.fd, "egress/0"},
         {&state->downcall.fd, "downcall/0"},
         {&state->xdp.fd, "xdp/0"},
+        {&state->afxdp[0].fd, "afxdp0/0"},
+        {&state->afxdp[1].fd, "afxdp1/0"},
+        {&state->afxdp[2].fd, "afxdp2/0"},
+        {&state->afxdp[3].fd, "afxdp3/0"},
         /* BPF Maps */
         {&state->upcalls.fd, "upcalls"},
         {&state->flow_table.fd, "flow_table"},
@@ -201,6 +206,10 @@ bpf_get(struct bpf_state *state, bool verbose)
         {&state->tailcalls.fd, "tailcalls"},
         {&state->execute_actions.fd, "execute_actions"},
         {&state->dp_flow_stats.fd, "dp_flow_stats"},
+        {&state->xsks_map[0].fd, "xsks_map0"},
+        {&state->xsks_map[1].fd, "xsks_map1"},
+        {&state->xsks_map[2].fd, "xsks_map2"},
+        {&state->xsks_map[3].fd, "xsks_map3"},
     };
     int i, k, error = 0;
     char buf[BUFSIZ];
@@ -217,7 +226,7 @@ bpf_get(struct bpf_state *state, bool verbose)
         }
         error = bpf_obj_get(buf);
         if (error > 0) {
-            VLOG_DBG("Loaded BPF object at %s fd %d", buf, error);
+            VLOG_INFO("Loaded BPF object at %s fd %d", buf, error);
             *objs[i].fd = error;
             error = 0;
             continue;
@@ -229,7 +238,7 @@ bpf_get(struct bpf_state *state, bool verbose)
 
     prog_array_fd = state->tailcalls.fd;
 
-    VLOG_DBG("start loading/pinning program array\n");
+    VLOG_INFO("start loading/pinning program array\n");
     for (k = 0; k < BPF_MAX_PROG_ARRAY; k++) {
         struct stat s;
         int prog_fd;
@@ -243,7 +252,7 @@ bpf_get(struct bpf_state *state, bool verbose)
 
         prog_fd = bpf_obj_get(buf);
         if (prog_fd > 0) {
-            VLOG_DBG("Loaded BPF object at %s", buf);
+            VLOG_INFO("Loaded BPF object at %s", buf);
             state->tailarray[k].fd = prog_fd;
             error = bpf_map_update_elem(prog_array_fd, &k, &prog_fd, BPF_ANY);
             if (error < 0) {
@@ -280,9 +289,17 @@ bpf_get(struct bpf_state *state, bool verbose)
         state->downcall.name = xstrdup("ovs_cls_downcall");
         state->upcalls.name = xstrdup("upcalls");
         state->xdp.name = xstrdup("xdp");
+        state->afxdp[0].name = xstrdup("afxdp0");
+        state->afxdp[1].name = xstrdup("afxdp1");
+        state->afxdp[2].name = xstrdup("afxdp2");
+        state->afxdp[3].name = xstrdup("afxdp3");
         state->flow_table.name = xstrdup("flow_table");
         state->datapath_stats.name = xstrdup("datapath_stats");
         state->dp_flow_stats.name = xstrdup("dp_flow_stats");
+        state->xsks_map[0].name = xstrdup("xsks_map0");
+        state->xsks_map[1].name = xstrdup("xsks_map1");
+        state->xsks_map[2].name = xstrdup("xsks_map2");
+        state->xsks_map[3].name = xstrdup("xsks_map3");
         // add parser, lookup, action, deparser
         state->tailcalls.name = xstrdup("tailcalls");
 
@@ -309,17 +326,33 @@ bpf_put(struct bpf_state *state)
     xclose(state->downcall.fd, state->downcall.name);
     xclose(state->upcalls.fd, state->upcalls.name);
     xclose(state->xdp.fd, state->xdp.name);
+    xclose(state->afxdp[0].fd, state->afxdp[0].name);
+    xclose(state->afxdp[1].fd, state->afxdp[1].name);
+    xclose(state->afxdp[2].fd, state->afxdp[2].name);
+    xclose(state->afxdp[3].fd, state->afxdp[3].name);
     xclose(state->flow_table.fd, "ovs_map_flow_table");
     xclose(state->datapath_stats.fd, "ovs_datapath_stats");
     xclose(state->dp_flow_stats.fd, state->dp_flow_stats.name);
+    xclose(state->xsks_map[0].fd, state->xsks_map[0].name);
+    xclose(state->xsks_map[1].fd, state->xsks_map[1].name);
+    xclose(state->xsks_map[2].fd, state->xsks_map[2].name);
+    xclose(state->xsks_map[3].fd, state->xsks_map[3].name);
     free((void *)state->ingress.name);
     free((void *)state->egress.name);
     free((void *)state->downcall.name);
     free((void *)state->upcalls.name);
     free((void *)state->xdp.name);
+    free((void *)state->afxdp[0].name);
+    free((void *)state->afxdp[1].name);
+    free((void *)state->afxdp[2].name);
+    free((void *)state->afxdp[3].name);
     free((void *)state->flow_table.name);
     free((void *)state->datapath_stats.name);
     free((void *)state->dp_flow_stats.name);
+    free((void *)state->xsks_map[0].name);
+    free((void *)state->xsks_map[1].name);
+    free((void *)state->xsks_map[2].name);
+    free((void *)state->xsks_map[3].name);
 }
 
 static void
@@ -335,7 +368,7 @@ process(struct bpf_object *obj)
         int error;
 
         VLOG_DBG(" - %s\n",  title);
-        if (strstr(title, "xdp")) {
+        if (strstr(title, "xdp")) { /* handle both xdp and afxdp */
             error = bpf_program__set_xdp(prog);
         } else {
             error = bpf_program__set_sched_cls(prog); // or sched_act?

@@ -153,6 +153,18 @@ BPF_PERCPU_ARRAY(percpu_executing_key,
         1
 );
 
+/* af_xdp map:
+ * key can be anything by our design,
+ * value is the receive queue id the userspace
+ * program received from
+ * we need one map per device
+ * the only parameter is the number of queues
+ */
+BPF_XSKMAP(xsks_map0, 4);
+BPF_XSKMAP(xsks_map1, 4);
+BPF_XSKMAP(xsks_map2, 4);
+BPF_XSKMAP(xsks_map3, 4);
+
 struct ebpf_headers_t;
 struct ebpf_metadata_t;
 

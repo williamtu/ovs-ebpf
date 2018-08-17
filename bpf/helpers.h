@@ -163,6 +163,8 @@ static int (*bpf_skb_change_tail)(void *ctx, int len, int flags) =
     (void *) BPF_FUNC_skb_change_tail;
 static int (*bpf_get_hash_recalc)(void *ctx) =
     (void *) BPF_FUNC_get_hash_recalc;
+static int (*bpf_redirect_map)(void *map, int key, int flags) =
+    (void *) BPF_FUNC_redirect_map;
 
 static int OVS_UNUSED vlan_push(void *ctx, ovs_be16 proto, u16 tci)
 {

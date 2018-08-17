@@ -376,6 +376,7 @@ AC_DEFUN([OVS_CHECK_BPF], [
       AC_DEFINE([HAVE_BPF], [1],
                 [Define to 1 if BPF is available.])
       BPF_LDADD="-lbpf -lelf"
+      AC_DEFINE([AFXDP_NETDEV], [1], [System uses the AFXDP module.])
       AC_SUBST([BPF_LDADD])
   fi
 ])
