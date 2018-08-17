@@ -336,6 +336,7 @@ m4_define([_OVS_VSWITCHD_START],
    on_exit "kill_ovs_vswitchd `cat ovs-vswitchd.pid`"
    AT_CHECK([[sed < stderr '
 /bpf|INFO|/d
+/netdev_linux|INFO|.*/d
 /ovs_numa|INFO|Discovered /d
 /vlog|INFO|opened log file/d
 /vswitchd|INFO|ovs-vswitchd (Open vSwitch)/d
