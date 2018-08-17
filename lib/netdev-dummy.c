@@ -1429,6 +1429,7 @@ netdev_dummy_update_flags(struct netdev *netdev_,
     NULL,                       /* set_policing */              \
     NULL,                       /* set_filter */                \
     NULL,                       /* set_xdp */                   \
+    NULL,                       /* set_xskmap */                   \
     NULL,                       /* get_qos_types */             \
     NULL,                       /* get_qos_capabilities */      \
     NULL,                       /* get_qos */                   \

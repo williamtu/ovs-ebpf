@@ -1000,6 +1000,9 @@ netdev_vport_set_xdp(struct netdev *netdev_, const struct bpf_prog *prog)
     ifindex = netdev_vport_get_ifindex(netdev_);
     error = bpf_set_link_xdp_fd(ifindex, prog->fd,
                                    XDP_FLAGS_SKB_MODE);
+    // FIXME / TODO
+    // update xsks_map_fd
+
     ovs_mutex_unlock(&netdev->mutex);
 
     VLOG_INFO("%s %d", __func__, error);
@@ -1057,6 +1060,7 @@ netdev_vport_set_xdp(struct netdev *netdev_, const struct bpf_prog *prog)
     NULL,                       /* set_policing */          \
     netdev_vport_set_filter,    /* set_filter */            \
     netdev_vport_set_xdp,       /* set_xdp */               \
+    NULL,                      /* set_xskmap */            \
     NULL,                       /* get_qos_types */         \
     NULL,                       /* get_qos_capabilities */  \
     NULL,                       /* get_qos */               \

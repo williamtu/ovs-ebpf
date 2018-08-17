@@ -76,6 +76,11 @@
 #include "unixctl.h"
 #include "util.h"
 
+#include "bpf.h"
+#include "netdev.h"
+#include "openvswitch/thread.h"
+#include <bpf/bpf.h>
+
 VLOG_DEFINE_THIS_MODULE(dpif_netdev);
 
 #define FLOW_DUMP_MAX_BATCH 50
@@ -506,6 +511,12 @@ struct tx_port {
     struct dp_packet_batch output_pkts;
     struct dp_netdev_rxq *output_pkts_rxqs[NETDEV_MAX_BURST];
 };
+
+static struct dp_bpf {
+    struct bpf_state bpf;
+    struct netdev *outport; /* Used for downcall. */
+} bpf_datapath;
+
 
 /* A set of properties for the current processing loop that is not directly
  * associated with the pmd thread itself, but with the packets being
@@ -1121,6 +1132,8 @@ dpif_netdev_pmd_info(struct unixctl_conn *conn, int argc, const char *argv[],
 static int
 dpif_netdev_init(void)
 {
+	int error;
+	static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
     static enum pmd_info_type show_aux = PMD_INFO_SHOW_STATS,
                               clear_aux = PMD_INFO_CLEAR_STATS,
                               poll_aux = PMD_INFO_SHOW_RXQ;
@@ -1137,6 +1150,17 @@ dpif_netdev_init(void)
     unixctl_command_register("dpif-netdev/pmd-rxq-rebalance", "[dp]",
                              0, 1, dpif_netdev_pmd_rebalance,
                              NULL);
+
+	// load the bpf program
+	if (ovsthread_once_start(&once)) {
+		// we don't need downcall device here
+		error = bpf_get(&bpf_datapath.bpf, true);
+		if (error) {
+			VLOG_ERR("%s: Load BPF datapath failed", __func__);
+		}
+	}
+	ovsthread_once_done(&once);
+
     return 0;
 }
 
@@ -1504,7 +1528,26 @@ dp_netdev_reload_pmd__(struct dp_netdev_pmd_thread *pmd)
     ovs_mutex_cond_wait(&pmd->cond, &pmd->cond_mutex);
     ovs_mutex_unlock(&pmd->cond_mutex);
 }
-
+/*
+static bool output_to_local_stack(struct netdev *netdev)
+{
+    return !strcmp(netdev_get_type(netdev), "tap");
+}
+*/
+static bool netdev_support_xdp(const char *devname)
+{
+    /*
+    struct netdev_linux *netdev_linux = netdev_linux_cast(netdev_linux);
+    if (netdev_linux->ifindex == 0)
+        return false;
+*/
+    if (!strstr(devname, "afxdp")) {
+        return false;
+    } else {
+        return true;
+    }
+}
+static int afxdp_idx;
 static int
 port_create(const char *devname, const char *type,
             odp_port_t port_no, struct dp_netdev_port **portp)
@@ -1519,7 +1562,7 @@ port_create(const char *devname, const char *type,
 
     /* Open and validate network device. */
     error = netdev_open(devname, type, &netdev);
-    VLOG_INFO("%s %s error %d", __func__, devname, error);
+    VLOG_INFO("%s %s type = %s error %d", __func__, devname, type, error);
     if (error) {
         return error;
     }
@@ -1536,6 +1579,23 @@ port_create(const char *devname, const char *type,
     if (error) {
         VLOG_ERR("%s: cannot set promisc flag", devname);
         goto out;
+    }
+
+    if (!strcmp(type, "afxdp")) {
+        // or a separate set_af_xdp?
+        // FIXME:
+        VLOG_INFO("using afxdp port idx %d", afxdp_idx);
+        error = netdev_set_xdp(netdev, &bpf_datapath.bpf.afxdp[afxdp_idx]);
+        if (error) {
+            VLOG_WARN("%s XDP set failed", __func__);
+            goto out;
+        }
+        error = netdev_set_xskmap(netdev, bpf_datapath.bpf.xsks_map[afxdp_idx].fd);
+        if (error) {
+            VLOG_ERR("%s XSK map set error\n", __func__);
+            goto out;
+        }
+        afxdp_idx++;
     }
 
     port = xzalloc(sizeof *port);
@@ -5008,8 +5068,11 @@ emc_processing(struct dp_netdev_pmd_thread *pmd,
         struct dp_netdev_flow *flow;
 
         if (OVS_UNLIKELY(dp_packet_size(packet) < ETH_HEADER_LEN)) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+
             dp_packet_delete(packet);
             n_dropped++;
+            VLOG_ERR_RL(&rl, "%s dropped packet size %d\n", __func__, dp_packet_size(packet));
             continue;
         }
 
@@ -5254,6 +5317,13 @@ dp_netdev_input__(struct dp_netdev_pmd_thread *pmd,
     n_batches = 0;
     emc_processing(pmd, packets, keys, batches, &n_batches,
                             md_is_valid, port_no);
+/*
+    if (dp_packet_batch_is_empty(packets)) {
+        VLOG_WARN("%s: batch is empty ", __func__);
+    } else {
+        VLOG_WARN("%s: batch is %lu ", __func__, packets->count);
+    }
+*/
     if (!dp_packet_batch_is_empty(packets)) {
         /* Get ingress port from first packet's metadata. */
         in_port = packets->packets[0]->md.in_port.odp_port;

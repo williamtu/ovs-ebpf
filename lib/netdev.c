@@ -142,6 +142,7 @@ netdev_initialize(void)
 
 #ifdef __linux__
         netdev_register_provider(&netdev_linux_class);
+        netdev_register_provider(&netdev_afxdp_class);
         netdev_register_provider(&netdev_internal_class);
         netdev_register_provider(&netdev_tap_class);
         netdev_vport_tunnel_register();
@@ -1473,6 +1474,16 @@ netdev_set_xdp(struct netdev *netdev, struct bpf_prog *prog)
             ? netdev->netdev_class->set_xdp(netdev, prog)
             : EOPNOTSUPP);
 }
+
+/* set xsk map */
+int
+netdev_set_xskmap(struct netdev *netdev, int xskmap)
+{
+    return (netdev->netdev_class->set_xskmap
+            ? netdev->netdev_class->set_xskmap(netdev, xskmap)
+            : EOPNOTSUPP);
+}
+
 
 /* Adds to 'types' all of the forms of QoS supported by 'netdev', or leaves it
  * empty if 'netdev' does not support QoS.  Any names added to 'types' should

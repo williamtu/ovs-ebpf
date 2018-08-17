@@ -515,6 +515,7 @@ struct netdev_class {
      *
      * This function may be set to null if filters are not supported. */
     int (*set_xdp)(struct netdev *netdev, const struct bpf_prog *);
+    int (*set_xskmap)(struct netdev *netdev, int xsks_map_fd);
 
     /* Adds to 'types' all of the forms of QoS supported by 'netdev', or leaves
      * it empty if 'netdev' does not support QoS.  Any names added to 'types'
@@ -884,6 +885,7 @@ extern const struct netdev_class netdev_bsd_class;
 extern const struct netdev_class netdev_windows_class;
 #else
 extern const struct netdev_class netdev_linux_class;
+extern const struct netdev_class netdev_afxdp_class;
 #endif
 extern const struct netdev_class netdev_internal_class;
 extern const struct netdev_class netdev_tap_class;

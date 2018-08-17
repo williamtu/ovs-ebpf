@@ -320,6 +320,7 @@ int netdev_set_policing(struct netdev *, uint32_t kbits_rate,
                         uint32_t kbits_burst);
 int netdev_set_filter(struct netdev *netdev, struct bpf_prog *prog);
 int netdev_set_xdp(struct netdev *netdev, struct bpf_prog *prog);
+int netdev_set_xskmap(struct netdev *netdev, int xsks_map_fd);
 
 int netdev_get_qos_types(const struct netdev *, struct sset *types);
 int netdev_get_qos_capabilities(const struct netdev *,
