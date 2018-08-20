@@ -1547,7 +1547,7 @@ static bool netdev_support_xdp(const char *devname)
         return true;
     }
 }
-static int afxdp_idx;
+static int afxdp_idx; /* create a resource pool */
 static int
 port_create(const char *devname, const char *type,
             odp_port_t port_no, struct dp_netdev_port **portp)

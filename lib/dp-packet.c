@@ -126,6 +126,9 @@ dp_packet_uninit(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
 #endif
+        } else if (b->source == DPBUF_AFXDP) {
+            return;
+            //free_afxdp_buf(dp_packet_base(b));
         }
     }
 }
@@ -254,6 +257,19 @@ dp_packet_resize__(struct dp_packet *b, size_t new_headroom, size_t new_tailroom
     case DPBUF_STACK:
         OVS_NOT_REACHED();
 
+    case DPBUF_AFXDP:
+    // 
+        if (new_headroom == dp_packet_headroom(b)) {
+            new_base = xmalloc(new_allocated);
+        } else {
+            new_base = xmalloc(new_allocated);
+            dp_packet_copy__(b, new_base, new_headroom, new_tailroom);
+            free(dp_packet_base(b));
+        }
+        b->source = DPBUF_MALLOC;
+        // put back to freelist
+        OVS_NOT_REACHED();
+        break;
     case DPBUF_STUB:
         b->source = DPBUF_MALLOC;
         new_base = xmalloc(new_allocated);

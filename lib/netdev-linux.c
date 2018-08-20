@@ -155,6 +155,31 @@ static const char pkt_data[] =
     "\x00\x2e\x00\x00\x00\x00\x40\x11\x88\x97\x05\x08\x07\x08\xc8\x14"
     "\x1e\x04\x10\x92\x10\x92\x00\x1a\x6d\xa3\x34\x33\x1f\x69\x40\x6b"
     "\x54\x59\xb6\x14\x2d\x11\x44\xbf\xaf\xd9\xbe\xaa";
+void
+umem_elem_push(struct umem_elem *head,
+               struct umem_elem *elem)
+{
+    struct umem_elem *next;
+
+    next = head->next;
+    head->next = elem;
+    elem->next = next;
+}
+
+struct umem_elem *
+umem_elem_pop(struct umem_elem *head)
+{
+    struct umem_elem *next, *new_head;
+    
+    next = head->next;
+    if (!next)
+        return NULL;
+
+    new_head = next->next;
+    head->next = new_head;
+    return next;
+}
+
 
 static inline u32 xq_nb_avail(struct xdp_uqueue *q, u32 ndescs)
 {
@@ -276,9 +301,11 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     struct xdp_umem *umem;
     socklen_t optlen;
     void *bufs;
+    int i;
 
     umem = calloc(1, sizeof(*umem));
     ovs_assert(umem);
+
 
     VLOG_DBG("enter: %s \n", __func__);
     ovs_assert(posix_memalign(&bufs, getpagesize(), /* PAGE_SIZE aligned */
@@ -331,6 +358,17 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
     umem->frames = bufs;
     umem->fd = sfd;
+    umem->head.next = NULL;
+
+    // initialize the umem->frame
+    for (i = NUM_FRAMES - 1; i >= 0; i--) {
+        struct umem_elem *elem;
+
+        elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
+        umem_elem_push(&umem->head, elem); 
+        VLOG_INFO("umem push %p", elem);
+    }
+    VLOG_INFO("umem_elem 1st %p", umem->head.next);
 
 #if 0
     if (opt_bench == BENCH_TXONLY) {
@@ -392,10 +430,21 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
                XDP_PGOFF_RX_RING);
     ovs_assert(xsk->rx.map != MAP_FAILED);
 
+/*
     if (!shared) {
         for (i = 0; i < NUM_DESCS * FRAME_SIZE; i += FRAME_SIZE)
             ovs_assert(umem_fill_to_kernel(&xsk->umem->fq, &i, 1)
                 == 0);
+    }
+*/
+    for (i = 0; i < NUM_DESCS; i++) {
+        struct umem_elem *elem;
+        uint64_t desc[1]; 
+
+        elem = umem_elem_pop(&xsk->umem->head);
+        desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
+        VLOG_INFO("pop %p and fill in fq", elem);
+        umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
 
     // FIXME: we also configure tx here
@@ -1733,24 +1782,28 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
               __func__, rcvd, xsk->sfd);
 
     for (i = 0; i < rcvd; i++) {
+        //struct dp_packet_afxdp *xpacket;
         struct dp_packet *packet;
         void *base, *new_packet;
 
         packet = xmalloc(sizeof *packet);
+        //packet = &xpacket->packet;
+        //xpacket->freelist_head = xsk->umem->head; 
 
         VLOG_INFO("%s packet len %d", __func__, descs[i].len);
         base = xq_get_data(xsk, descs[i].addr);
 
-        //vlog_hex_dump(base, 14);
+        vlog_hex_dump(base, 14);
         new_packet = malloc(2048);
         memcpy(new_packet, base, descs[i].len);
 
+        VLOG_INFO("push back %p", base);
+        umem_elem_push(&xsk->umem->head, (struct umem_elem *)base);
         //dp_packet_use(packet, base, descs[i].len);
         dp_packet_use(packet, new_packet, descs[i].len);
 
         packet->source = DPBUF_MALLOC;
-        //dp_packet_set_data(packet, base); // no offset now?
-        dp_packet_set_data(packet, new_packet); // no offset now?
+        dp_packet_set_data(packet, new_packet);
         dp_packet_set_size(packet, descs[i].len);
 
         /* add packet into batch, batch->count inc */
@@ -1840,7 +1893,7 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     struct xdp_uqueue *uq;
     struct xdp_desc *r;
     int ndescs = batch->count;
-    u32 id = NUM_FRAMES / 2;
+    //u32 id = NUM_FRAMES / 2;
 
     VLOG_INFO("%s send %lu packet to fd %d", __func__, batch->count, xsk->sfd);
     VLOG_INFO("%s outstanding tx %d", __func__, xsk->outstanding_tx);
@@ -1857,16 +1910,24 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
             void *umem_buf;
+            struct umem_elem *elem;
 
             u32 idx = uq->cached_prod++ & uq->mask;
             // FIXME: find available id
-            umem_buf = xsk->umem->frames + (id << FRAME_SHIFT);
 
-            memcpy(umem_buf, dp_packet_data(packet), dp_packet_size(packet));
+            elem = umem_elem_pop(&xsk->umem->head);
+
+            if (!elem) {
+                VLOG_ERR("no available elem!");
+                OVS_NOT_REACHED();
+            }
+            VLOG_INFO("elem %p", elem);
+            memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
             //vlog_hex_dump(dp_packet_data(packet), 14);
-            r[idx].addr = (id << FRAME_SHIFT);
+            r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
             r[idx].len = dp_packet_size(packet);
-            id++;
+
+            VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
 #if 0 /* avoid copy */
         } else {
             u32 idx = uq->cached_prod++ & uq->mask;

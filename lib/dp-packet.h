@@ -30,6 +30,7 @@
 #include "packets.h"
 #include "util.h"
 #include "flow.h"
+#include "xdpsock.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -42,10 +43,10 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
+    DPBUF_AFXDP,
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
-
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated
  * as necessary if it grows too large for the available memory.
  * By default the packet type is set to Ethernet (PT_ETH).
@@ -79,6 +80,16 @@ struct dp_packet {
         uint64_t data[DP_PACKET_CONTEXT_SIZE / 8];
     };
 };
+
+struct dp_packet_afxdp {
+    struct umem_elem freelist_head;
+    struct dp_packet packet;
+};
+
+static struct dp_packet_afxdp *dp_packet_cast_afxdp(const struct dp_packet *d)
+{
+    return CONTAINER_OF(d, struct dp_packet_afxdp, packet);
+}
 
 static inline void *dp_packet_data(const struct dp_packet *);
 static inline void dp_packet_set_data(struct dp_packet *, void *);
@@ -174,7 +185,10 @@ dp_packet_delete(struct dp_packet *b)
             free_dpdk_buf((struct dp_packet*) b);
             return;
         }
-
+        if (b->source == DPBUF_AFXDP) {
+//            free_afxdp_buf(dp_packet_base(b)); // recycle the id in umem freelist
+            return;
+        }
         dp_packet_uninit(b);
         free(b);
     }
