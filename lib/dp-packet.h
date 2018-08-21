@@ -190,6 +190,7 @@ dp_packet_delete(struct dp_packet *b)
             struct dp_packet_afxdp *xpacket;
 
             xpacket = dp_packet_cast_afxdp(b);
+            // we still need it for mixed system/afxdp devices?
             //umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
             free(xpacket);
             return;

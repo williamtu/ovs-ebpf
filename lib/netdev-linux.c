@@ -335,6 +335,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     umem->fd = sfd;
     umem->head.next = NULL;
     atomic_count_init(&umem->head.n, 0);
+    ovs_mutex_init(&umem->head.mutex);
 
     // initialize the umem->frame
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
