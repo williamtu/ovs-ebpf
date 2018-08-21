@@ -82,12 +82,13 @@ struct dp_packet {
 };
 
 struct dp_packet_afxdp {
-    struct umem_elem freelist_head;
+    struct umem_elem *freelist_head;
     struct dp_packet packet;
 };
 
 static struct dp_packet_afxdp *dp_packet_cast_afxdp(const struct dp_packet *d)
 {
+    ovs_assert(d->source == DPBUF_AFXDP);
     return CONTAINER_OF(d, struct dp_packet_afxdp, packet);
 }
 
@@ -186,7 +187,11 @@ dp_packet_delete(struct dp_packet *b)
             return;
         }
         if (b->source == DPBUF_AFXDP) {
-//            free_afxdp_buf(dp_packet_base(b)); // recycle the id in umem freelist
+            struct dp_packet_afxdp *xpacket;
+
+            xpacket = dp_packet_cast_afxdp(b);
+            umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
+            free(xpacket);
             return;
         }
         dp_packet_uninit(b);

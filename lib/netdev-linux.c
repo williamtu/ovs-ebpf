@@ -102,7 +102,7 @@ COVERAGE_DEFINE(netdev_set_ethtool);
 #define PF_XDP AF_XDP
 #endif
 
-#define NUM_FRAMES 128
+#define NUM_FRAMES 64
 #define FRAME_HEADROOM 0
 #define FRAME_SIZE 2048
 #define NUM_DESCS 32
@@ -155,31 +155,6 @@ static const char pkt_data[] =
     "\x00\x2e\x00\x00\x00\x00\x40\x11\x88\x97\x05\x08\x07\x08\xc8\x14"
     "\x1e\x04\x10\x92\x10\x92\x00\x1a\x6d\xa3\x34\x33\x1f\x69\x40\x6b"
     "\x54\x59\xb6\x14\x2d\x11\x44\xbf\xaf\xd9\xbe\xaa";
-void
-umem_elem_push(struct umem_elem *head,
-               struct umem_elem *elem)
-{
-    struct umem_elem *next;
-
-    next = head->next;
-    head->next = elem;
-    elem->next = next;
-}
-
-struct umem_elem *
-umem_elem_pop(struct umem_elem *head)
-{
-    struct umem_elem *next, *new_head;
-    
-    next = head->next;
-    if (!next)
-        return NULL;
-
-    new_head = next->next;
-    head->next = new_head;
-    return next;
-}
-
 
 static inline u32 xq_nb_avail(struct xdp_uqueue *q, u32 ndescs)
 {
@@ -366,9 +341,9 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         umem_elem_push(&umem->head, elem); 
-        VLOG_INFO("umem push %p", elem);
+        VLOG_INFO("umem push %p counter %d", elem);
     }
-    VLOG_INFO("umem_elem 1st %p", umem->head.next);
+    VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
 
 #if 0
     if (opt_bench == BENCH_TXONLY) {
@@ -443,7 +418,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
 
         elem = umem_elem_pop(&xsk->umem->head);
         desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
-        VLOG_INFO("pop %p and fill in fq", elem);
+        VLOG_INFO("pop %p and fill in fq, counter %d", elem, counter);
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
 
@@ -1782,28 +1757,24 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
               __func__, rcvd, xsk->sfd);
 
     for (i = 0; i < rcvd; i++) {
-        //struct dp_packet_afxdp *xpacket;
+        struct dp_packet_afxdp *xpacket;
         struct dp_packet *packet;
         void *base, *new_packet;
 
-        packet = xmalloc(sizeof *packet);
-        //packet = &xpacket->packet;
-        //xpacket->freelist_head = xsk->umem->head; 
+        xpacket = xmalloc(sizeof *xpacket);
+        packet = &xpacket->packet;
+        xpacket->freelist_head = &xsk->umem->head; 
 
         VLOG_INFO("%s packet len %d", __func__, descs[i].len);
         base = xq_get_data(xsk, descs[i].addr);
 
         vlog_hex_dump(base, 14);
-        new_packet = malloc(2048);
-        memcpy(new_packet, base, descs[i].len);
+        //new_packet = malloc(2048);
 
-        VLOG_INFO("push back %p", base);
-        umem_elem_push(&xsk->umem->head, (struct umem_elem *)base);
-        //dp_packet_use(packet, base, descs[i].len);
-        dp_packet_use(packet, new_packet, descs[i].len);
+        dp_packet_use(packet, base, descs[i].len);
 
-        packet->source = DPBUF_MALLOC;
-        dp_packet_set_data(packet, new_packet);
+        packet->source = DPBUF_AFXDP;
+        dp_packet_set_data(packet, base);
         dp_packet_set_size(packet, descs[i].len);
 
         /* add packet into batch, batch->count inc */
@@ -1811,8 +1782,23 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
     }
 
     xsk->rx_npkts += rcvd;
-    umem_fill_to_kernel_ex(&xsk->umem->fq, descs, rcvd);
-
+    //do it when free...
+    
+    // refill
+    for (i = 0; i < rcvd; i++) {
+        struct umem_elem *elem;
+        struct xdp_desc descs[1];
+retry:
+        VLOG_INFO("umem counter %d", counter);
+        elem = umem_elem_pop(&xsk->umem->head);
+        if (!elem) {
+            VLOG_ERR("retry");
+            goto retry;
+        }
+        descs[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
+        umem_fill_to_kernel_ex(&xsk->umem->fq, descs, 1);
+        VLOG_INFO("refill the rx queue");
+    }
     //batch->count = rcvd; // batch_add inc the counter
     //don't put it back to FILL queue yet.
 
@@ -1893,7 +1879,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     struct xdp_uqueue *uq;
     struct xdp_desc *r;
     int ndescs = batch->count;
-    //u32 id = NUM_FRAMES / 2;
 
     VLOG_INFO("%s send %lu packet to fd %d", __func__, batch->count, xsk->sfd);
     VLOG_INFO("%s outstanding tx %d", __func__, xsk->outstanding_tx);
@@ -1911,10 +1896,11 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
             void *umem_buf;
             struct umem_elem *elem;
+            struct dp_packet_afxdp *xpacket;
 
             u32 idx = uq->cached_prod++ & uq->mask;
             // FIXME: find available id
-
+            VLOG_INFO("umem counter %d", counter);
             elem = umem_elem_pop(&xsk->umem->head);
 
             if (!elem) {
@@ -1923,11 +1909,20 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
             }
             VLOG_INFO("elem %p", elem);
             memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
+
+
             //vlog_hex_dump(dp_packet_data(packet), 14);
             r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
             r[idx].len = dp_packet_size(packet);
 
             VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
+           
+            if (packet->source == DPBUF_AFXDP) {
+                xpacket = dp_packet_cast_afxdp(packet);
+                VLOG_INFO("head %p push back %p",
+                      xpacket->freelist_head, dp_packet_base(packet));
+                umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
+            }
 #if 0 /* avoid copy */
         } else {
             u32 idx = uq->cached_prod++ & uq->mask;
@@ -1946,7 +1941,25 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
     xsk->outstanding_tx += batch->count;
 
-    complete_tx_only(xsk);
+//    complete_tx_only(xsk);
+	u64 descs[BATCH_SIZE];
+	unsigned int rcvd;
+    int i;
+
+	kick_tx(xsk->sfd);
+
+	rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
+	if (rcvd > 0) {
+			xsk->outstanding_tx -= rcvd;
+			xsk->tx_npkts += rcvd;
+	}
+    for (i = 0; i < rcvd; i++) {
+        struct umem_elem *elem;
+
+        elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
+        umem_elem_push(&xsk->umem->head, elem);
+        VLOG_INFO("push back head %p elem %p counter %d", &xsk->umem->head, elem, counter);
+    }
     print_xsk_stat(xsk);
 
     return 0;
