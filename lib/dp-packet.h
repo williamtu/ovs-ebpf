@@ -82,7 +82,7 @@ struct dp_packet {
 };
 
 struct dp_packet_afxdp {
-    struct umem_elem *freelist_head;
+    struct umem_elem_head *freelist_head;
     struct dp_packet packet;
 };
 
@@ -190,7 +190,7 @@ dp_packet_delete(struct dp_packet *b)
             struct dp_packet_afxdp *xpacket;
 
             xpacket = dp_packet_cast_afxdp(b);
-            umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
+            //umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
             free(xpacket);
             return;
         }

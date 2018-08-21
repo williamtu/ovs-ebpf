@@ -334,6 +334,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     umem->frames = bufs;
     umem->fd = sfd;
     umem->head.next = NULL;
+    atomic_count_init(&umem->head.n, 0);
 
     // initialize the umem->frame
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
@@ -341,7 +342,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         umem_elem_push(&umem->head, elem); 
-        VLOG_INFO("umem push %p counter %d", elem);
+        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
     }
     VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
 
@@ -418,7 +419,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
 
         elem = umem_elem_pop(&xsk->umem->head);
         desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
-        VLOG_INFO("pop %p and fill in fq, counter %d", elem, counter);
+        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->head));
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
 
@@ -1789,8 +1790,9 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         struct umem_elem *elem;
         struct xdp_desc descs[1];
 retry:
-        VLOG_INFO("umem counter %d", counter);
+        VLOG_INFO("RX pop refill umem counter %d", umem_elem_count(&xsk->umem->head));
         elem = umem_elem_pop(&xsk->umem->head);
+        VLOG_INFO("RX refill umem counter %d", umem_elem_count(&xsk->umem->head));
         if (!elem) {
             VLOG_ERR("retry");
             goto retry;
@@ -1900,8 +1902,9 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
             u32 idx = uq->cached_prod++ & uq->mask;
             // FIXME: find available id
-            VLOG_INFO("umem counter %d", counter);
+            VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
             elem = umem_elem_pop(&xsk->umem->head);
+            VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
 
             if (!elem) {
                 VLOG_ERR("no available elem!");
@@ -1918,10 +1921,13 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
             VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
            
             if (packet->source == DPBUF_AFXDP) {
+
                 xpacket = dp_packet_cast_afxdp(packet);
-                VLOG_INFO("head %p push back %p",
+                VLOG_INFO("TX from umem: head %p push back %p",
                       xpacket->freelist_head, dp_packet_base(packet));
                 umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
+            } else {
+                VLOG_INFO("TX from malloc");
             }
 #if 0 /* avoid copy */
         } else {
@@ -1953,12 +1959,16 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 			xsk->outstanding_tx -= rcvd;
 			xsk->tx_npkts += rcvd;
 	}
+    VLOG_INFO("%s complete %d tx", __func__, rcvd);
     for (i = 0; i < rcvd; i++) {
         struct umem_elem *elem;
 
+        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->head,
+                  elem, umem_elem_count(&xsk->umem->head));
         elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
         umem_elem_push(&xsk->umem->head, elem);
-        VLOG_INFO("push back head %p elem %p counter %d", &xsk->umem->head, elem, counter);
+        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->head,
+                  elem, umem_elem_count(&xsk->umem->head));
     }
     print_xsk_stat(xsk);
 
