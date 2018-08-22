@@ -1897,39 +1897,40 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     }
 
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
-            void *umem_buf;
-            struct umem_elem *elem;
-            struct dp_packet_afxdp *xpacket;
+        void *umem_buf;
+        struct umem_elem *elem;
+        struct dp_packet_afxdp *xpacket;
 
-            u32 idx = uq->cached_prod++ & uq->mask;
-            // FIXME: find available id
-            VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
-            elem = umem_elem_pop(&xsk->umem->head);
-            VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
+        u32 idx = uq->cached_prod++ & uq->mask;
+        // FIXME: find available id
+        VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
+        elem = umem_elem_pop(&xsk->umem->head);
+        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
 
-            if (!elem) {
-                VLOG_ERR("no available elem!");
-                OVS_NOT_REACHED();
-            }
-            VLOG_INFO("elem %p", elem);
-            memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
+        if (!elem) {
+            VLOG_ERR("no available elem!");
+            OVS_NOT_REACHED();
+        }
+        VLOG_INFO("elem %p", elem);
 
+        memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
 
-            //vlog_hex_dump(dp_packet_data(packet), 14);
-            r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
-            r[idx].len = dp_packet_size(packet);
+        //vlog_hex_dump(dp_packet_data(packet), 14);
+        r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
+        r[idx].len = dp_packet_size(packet);
 
-            VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
-           
-            if (packet->source == DPBUF_AFXDP) {
+        VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
+       
+        if (packet->source == DPBUF_AFXDP) {
 
-                xpacket = dp_packet_cast_afxdp(packet);
-                VLOG_INFO("TX from umem: head %p push back %p",
-                      xpacket->freelist_head, dp_packet_base(packet));
-                umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
-            } else {
-                VLOG_INFO("TX from malloc");
-            }
+            xpacket = dp_packet_cast_afxdp(packet);
+            VLOG_INFO("TX from umem: head %p push back %p",
+                  xpacket->freelist_head, dp_packet_base(packet));
+            umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
+            xpacket->freelist_head = NULL; // so we won't free it twice
+        } else {
+            VLOG_INFO("TX from malloc");
+        }
 #if 0 /* avoid copy */
         } else {
             u32 idx = uq->cached_prod++ & uq->mask;

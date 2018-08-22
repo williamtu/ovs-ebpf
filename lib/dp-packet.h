@@ -189,9 +189,14 @@ dp_packet_delete(struct dp_packet *b)
         if (b->source == DPBUF_AFXDP) {
             struct dp_packet_afxdp *xpacket;
 
+            // if a packet is received from afxdp port,
+            // and tx to a system port. Then we need to
+            // push the rx umem back here
+
             xpacket = dp_packet_cast_afxdp(b);
             // we still need it for mixed system/afxdp devices?
-            //umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
+            if (xpacket->freelist_head)
+                umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
             free(xpacket);
             return;
         }
