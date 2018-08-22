@@ -322,6 +322,7 @@ $(SYSTEM_USERSPACE_TESTSUITE): package.m4 $(SYSTEM_TESTSUITE_AT) $(SYSTEM_USERSP
 $(SYSTEM_AFXDP_TESTSUITE): package.m4 $(SYSTEM_TESTSUITE_AT) $(SYSTEM_AFXDP_TESTSUITE_AT) $(COMMON_MACROS_AT)
 	$(AM_V_GEN)$(AUTOTEST) -I '$(srcdir)' -o $@.tmp $@.at
 	$(AM_V_at)mv $@.tmp $@
+	$(AM_V_at)patch -p1 $@ tests/system-bpf-testsuite.patch
 
 $(SYSTEM_BPF_TESTSUITE): package.m4 $(SYSTEM_TESTSUITE_AT) $(SYSTEM_BPF_TESTSUITE_AT) $(BPF_TESTSUITE_PATCH) $(COMMON_MACROS_AT)
 	$(AM_V_GEN)$(AUTOTEST) -I '$(srcdir)' -o $@.tmp $@.at

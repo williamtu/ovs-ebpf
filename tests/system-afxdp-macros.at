@@ -23,6 +23,9 @@ m4_define([OVS_TRAFFIC_VSWITCHD_START],
    dnl Add bridges, ports, etc.
    OVS_WAIT_WHILE([ip link show br0])
    AT_CHECK([ovs-vsctl -- _ADD_BR([br0]) -- $1 m4_if([$2], [], [], [| uuidfilt])], [0], [$2])
+   on_exit 'ovs-vsctl del-br br0'
+   on_exit 'ip link del ovs-netdev'
+   on_exit 'tail -500 /sys/kernel/debug/tracing/trace > trace'
 ])
 
 # OVS_TRAFFIC_VSWITCHD_STOP([WHITELIST], [extra_cmds])
@@ -43,6 +46,7 @@ $1";/netdev_linux.*obtaining netdev stats via vport failed/d
 /dpif_netlink.*Generic Netlink family 'ovs_datapath' does not exist. The Open vSwitch kernel module is probably not loaded./d"])
    AT_CHECK([:; $2])
    AT_CHECK([umount /sys/fs/bpf])
+   ip link del br0
   ])
 
 m4_define([ADD_VETH_AFXDP],
