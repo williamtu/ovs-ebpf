@@ -1781,28 +1781,25 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
     }
 
     xsk->rx_npkts += rcvd;
-    //do it when free...
-    
-    // refill
+
     for (i = 0; i < rcvd; i++) {
         struct umem_elem *elem;
         struct xdp_desc descs[1];
+        int retry_cnt = 0;
 retry:
-        VLOG_INFO("RX pop refill umem counter %d", umem_elem_count(&xsk->umem->head));
         elem = umem_elem_pop(&xsk->umem->head);
-        VLOG_INFO("RX refill umem counter %d", umem_elem_count(&xsk->umem->head));
-        if (!elem) {
-            VLOG_ERR("retry");
+        if (!elem && retry_cnt < 10) {
+            retry_cnt++;
+            VLOG_WARN("retry refilling the fill queue");
+            xsleep(1);
             goto retry;
         }
         descs[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
         umem_fill_to_kernel_ex(&xsk->umem->fq, descs, 1);
-        VLOG_INFO("refill the rx queue");
     }
-    //batch->count = rcvd; // batch_add inc the counter
-    //don't put it back to FILL queue yet.
-
+#ifdef DEBUG
     print_xsk_stat(xsk);
+#endif
     return ret;
 }
 
