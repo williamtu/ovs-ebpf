@@ -102,8 +102,7 @@ COVERAGE_DEFINE(netdev_set_ethtool);
 #define PF_XDP AF_XDP
 #endif
 
-#define NUM_FRAMES 64
-#define FRAME_HEADROOM 0
+#define FRAME_HEADROOM 128
 #define FRAME_SIZE 2048
 #define NUM_DESCS 32
 
@@ -1767,13 +1766,11 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         packet = &xpacket->packet;
         xpacket->freelist_head = &xsk->umem->head; 
 
-        VLOG_INFO("%s packet len %d", __func__, descs[i].len);
         base = xq_get_data(xsk, descs[i].addr);
-
+        VLOG_WARN("XXX base %p", base);
         vlog_hex_dump(base, 14);
-        //new_packet = malloc(2048);
 
-        dp_packet_use(packet, base, descs[i].len);
+        dp_packet_use(packet, base - FRAME_HEADROOM, descs[i].len);
 
         packet->source = DPBUF_AFXDP;
         dp_packet_set_data(packet, base);
