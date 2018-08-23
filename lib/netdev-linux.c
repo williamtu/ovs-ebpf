@@ -46,7 +46,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <bpf/libbpf.h> /* linux/tools/bpf/libbpf.h */
+#include <bpf/bpf.h> /* linux/tools/bpf/libbpf.h */
 
 #include "bpf.h"
 #include "coverage.h"
@@ -93,28 +93,19 @@ COVERAGE_DEFINE(netdev_set_ethtool);
 #ifndef SOL_XDP
 #define SOL_XDP 283
 #endif
-
 #ifndef AF_XDP
 #define AF_XDP 44
 #endif
-
 #ifndef PF_XDP
 #define PF_XDP AF_XDP
 #endif
-
-#define FRAME_HEADROOM 128
-#define FRAME_SIZE 2048
-#define NUM_DESCS 32
-
-#define FQ_NUM_DESCS 32
-#define CQ_NUM_DESCS 32
-
 #define DEBUG_HEXDUMP 0
 
 typedef __u32 u32;
 typedef uint64_t u64;
 
 #include "lib/xdpsock.h"
+
 static u32 opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
 static u32 opt_xdp_bind_flags;
 
@@ -190,7 +181,6 @@ static inline int umem_fill_to_kernel_ex(struct xdp_umem_uqueue *fq,
 {
         u32 i;
 
-        VLOG_INFO("%s nb = %d", __func__, nb);
         if (umem_nb_free(fq, nb) < nb)  {
             VLOG_ERR("%s error\n", __func__);
             return -ENOSPC;
@@ -326,14 +316,14 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
     umem->cq.mask = CQ_NUM_DESCS - 1;
     umem->cq.size = CQ_NUM_DESCS;
-    umem->cq.producer = umem->cq.map + off.cr.producer;
-    umem->cq.consumer = umem->cq.map + off.cr.consumer;
-    umem->cq.ring = umem->cq.map + off.cr.desc;
+    umem->cq.producer = (void *)((char *)umem->cq.map + off.cr.producer);
+    umem->cq.consumer = (void *)((char *)umem->cq.map + off.cr.consumer);
+    umem->cq.ring = (void *)((char *)umem->cq.map + off.cr.desc);
 
     umem->frames = bufs;
     umem->fd = sfd;
     umem->head.next = NULL;
-    atomic_count_init(&umem->head.n, 0);
+    umem->head.n = 0;
     ovs_mutex_init(&umem->head.mutex);
 
     // initialize the umem->frame
@@ -435,15 +425,15 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
 
     xsk->rx.mask = NUM_DESCS - 1;
     xsk->rx.size = NUM_DESCS;
-    xsk->rx.producer = xsk->rx.map + off.rx.producer;
-    xsk->rx.consumer = xsk->rx.map + off.rx.consumer;
-    xsk->rx.ring = xsk->rx.map + off.rx.desc;
+    xsk->rx.producer = (void *)((char *)xsk->rx.map + off.rx.producer);
+    xsk->rx.consumer = (void *)((char *)xsk->rx.map + off.rx.consumer);
+    xsk->rx.ring = (void *)((char *)xsk->rx.map + off.rx.desc);
 
     xsk->tx.mask = NUM_DESCS - 1;
     xsk->tx.size = NUM_DESCS;
-    xsk->tx.producer = xsk->tx.map + off.tx.producer;
-    xsk->tx.consumer = xsk->tx.map + off.tx.consumer;
-    xsk->tx.ring = xsk->tx.map + off.tx.desc;
+    xsk->tx.producer = (void *)((char *)xsk->tx.map + off.tx.producer);
+    xsk->tx.consumer = (void *)((char *)xsk->tx.map + off.tx.consumer);
+    xsk->tx.ring = (void *)((char *)xsk->tx.map + off.tx.desc);
     xsk->tx.cached_cons = NUM_DESCS;
 
     /* XSK socket */
@@ -494,7 +484,7 @@ static inline void *xq_get_data(struct xdpsock *xsk, u64 addr)
     return &xsk->umem->frames[addr];
 }
 
-static void vlog_hex_dump(const void *buf, size_t count)
+static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
     ds_put_hex_dump(&ds, buf, count, 0, false);
@@ -612,7 +602,8 @@ static inline int xq_enq_tx_only(struct xdp_uqueue *uq,
     return 0;
 }
 
-static inline void print_xsk_stat(struct xdpsock *xsk) {
+static inline void print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
+#ifdef DEBUG
     struct xdp_statistics stat;
     socklen_t optlen;
 
@@ -622,7 +613,9 @@ static inline void print_xsk_stat(struct xdpsock *xsk) {
 
     VLOG_INFO("rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
              stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
-
+#else
+    return;
+#endif
 }
 // =========================================================
 #endif
@@ -1760,17 +1753,17 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
     for (i = 0; i < rcvd; i++) {
         struct dp_packet_afxdp *xpacket;
         struct dp_packet *packet;
-        void *base, *new_packet;
+        void *base;
 
         xpacket = xmalloc(sizeof *xpacket);
         packet = &xpacket->packet;
         xpacket->freelist_head = &xsk->umem->head; 
 
         base = xq_get_data(xsk, descs[i].addr);
-        VLOG_WARN("XXX base %p", base);
+#ifdef DEBUG
         vlog_hex_dump(base, 14);
-
-        dp_packet_use(packet, base - FRAME_HEADROOM, descs[i].len);
+#endif
+        dp_packet_use(packet, (char *)base - FRAME_HEADROOM, descs[i].len);
 
         packet->source = DPBUF_AFXDP;
         dp_packet_set_data(packet, base);
@@ -1797,9 +1790,8 @@ retry:
         descs[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
         umem_fill_to_kernel_ex(&xsk->umem->fq, descs, 1);
     }
-#ifdef DEBUG
+
     print_xsk_stat(xsk);
-#endif
     return ret;
 }
 
@@ -1891,7 +1883,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     }
 
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
-        void *umem_buf;
         struct umem_elem *elem;
         struct dp_packet_afxdp *xpacket;
 
@@ -1959,13 +1950,14 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     for (i = 0; i < rcvd; i++) {
         struct umem_elem *elem;
 
-        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->head,
-                  elem, umem_elem_count(&xsk->umem->head));
         elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
         umem_elem_push(&xsk->umem->head, elem);
+#ifdef DEBUG
         VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->head,
                   elem, umem_elem_count(&xsk->umem->head));
+#endif
     }
+
     print_xsk_stat(xsk);
 
     return 0;
