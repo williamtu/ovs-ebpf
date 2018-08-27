@@ -518,7 +518,7 @@ init_ebpf(const struct ovsrec_open_vswitch *ovs_cfg OVS_UNUSED)
     if (ovsthread_once_start(&once)) {
         char *bpf_elf = xasprintf("%s/bpf/datapath.o", ovs_pkgdatadir());
 
-        VLOG_DBG("%s bpf elf: %s", __func__, bpf_elf);
+        VLOG_INFO("%s bpf elf: %s", __func__, bpf_elf);
         error = bpf_init();
         if (!error) {
             error = bpf_load(bpf_elf);

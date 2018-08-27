@@ -4939,6 +4939,7 @@ dpif_netdev_packet_get_rss_hash_orig_pkt(struct dp_packet *packet,
         hash = dp_packet_get_rss_hash(packet);
     } else {
         hash = miniflow_hash_5tuple(mf, 0);
+VLOG_INFO("hash %x", hash);
         dp_packet_set_rss_hash(packet, hash);
     }
 
@@ -5317,13 +5318,7 @@ dp_netdev_input__(struct dp_netdev_pmd_thread *pmd,
     n_batches = 0;
     emc_processing(pmd, packets, keys, batches, &n_batches,
                             md_is_valid, port_no);
-/*
-    if (dp_packet_batch_is_empty(packets)) {
-        VLOG_WARN("%s: batch is empty ", __func__);
-    } else {
-        VLOG_WARN("%s: batch is %lu ", __func__, packets->count);
-    }
-*/
+
     if (!dp_packet_batch_is_empty(packets)) {
         /* Get ingress port from first packet's metadata. */
         in_port = packets->packets[0]->md.in_port.odp_port;

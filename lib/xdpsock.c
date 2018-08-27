@@ -35,12 +35,12 @@ umem_elem_push(struct umem_elem_head *head,
 {
     struct umem_elem *next;
 
-    ovs_mutex_lock(&head->mutex);
+//    ovs_mutex_lock(&head->mutex);
     next = head->next;
     head->next = elem;
     elem->next = next;
     head->n++;
-    ovs_mutex_unlock(&head->mutex);
+//    ovs_mutex_unlock(&head->mutex);
 }
 
 struct umem_elem *
@@ -48,16 +48,16 @@ umem_elem_pop(struct umem_elem_head *head)
 {
     struct umem_elem *next, *new_head;
 
-    ovs_mutex_lock(&head->mutex);
+//    ovs_mutex_lock(&head->mutex);
     next = head->next;
     if (!next) {
-        ovs_mutex_unlock(&head->mutex);
+//        ovs_mutex_unlock(&head->mutex);
         return NULL;
     }
     new_head = next->next;
     head->next = new_head;
     head->n--;
-    ovs_mutex_unlock(&head->mutex);
+//    ovs_mutex_unlock(&head->mutex);
     return next;
 }
 

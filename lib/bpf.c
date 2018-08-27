@@ -551,7 +551,7 @@ mount_bpf(void)
 int
 bpf_init(void)
 {
-    libbpf_set_print(print_WARN, print_INFO, print_DBG);
+    //libbpf_set_print(print_WARN, print_INFO, print_DBG);
     /* skip using mount_bpf */
     return 0;
 }

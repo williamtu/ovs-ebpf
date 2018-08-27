@@ -197,7 +197,7 @@ dp_packet_delete(struct dp_packet *b)
             if (xpacket->freelist_head)
                 umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
 
-            free(xpacket);
+            //free(xpacket);
             return;
         }
         dp_packet_uninit(b);

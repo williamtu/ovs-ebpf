@@ -28,17 +28,17 @@
 #include "ovs-atomic.h"
 #include "openvswitch/thread.h"
 
-#define FRAME_HEADROOM 128
+#define FRAME_HEADROOM 1024
 #define FRAME_SHIFT 11
 #define FRAME_SIZE 2048
-#define BATCH_SIZE 16
+#define BATCH_SIZE NETDEV_MAX_BURST 
 
-#define NUM_FRAMES 128
+#define NUM_FRAMES 131072
 #define FRAME_SIZE 2048
-#define NUM_DESCS 64 
+#define NUM_DESCS 1024
 
-#define FQ_NUM_DESCS 32
-#define CQ_NUM_DESCS 32
+#define FQ_NUM_DESCS 1024
+#define CQ_NUM_DESCS 1024
 
 struct umem_elem_head {
     struct umem_elem *next;

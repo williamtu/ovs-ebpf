@@ -68,6 +68,7 @@ static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
 #endif
 }
 
+#ifdef DEBUG
 #define AFXDP_REDIRECT(xskmap) { \
     int idx = 0; \
     int flags = 0; \
@@ -76,7 +77,14 @@ static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
             ctx->ingress_ifindex, ctx->rx_queue_index, len); \
     printt("send to queue xsk queue 0\n"); \
     return bpf_redirect_map(xskmap, idx, flags); \
-}\
+}
+#else
+#define AFXDP_REDIRECT(xskmap) { \
+    int idx = 0; \
+    int flags = 0; \
+    return bpf_redirect_map(xskmap, idx, flags); \
+}
+#endif
 
 /* For AFXDP, we need one map and one afxdp program per netdev */
 __section("afxdp0")
