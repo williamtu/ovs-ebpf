@@ -266,9 +266,23 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
 
     VLOG_DBG("enter: %s \n", __func__);
+
+#define HUGETLB
+#define ADDR (void *)(0x0UL)
+#define FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB)
+#define PROTECTION (PROT_READ | PROT_WRITE)
+
+#ifdef HUGETLB
+// mount -t hugetlbfs nodev /mnt
+// echo 4 > /proc/sys/vm/nr_hugepages
+    bufs = mmap(ADDR, NUM_FRAMES * FRAME_SIZE, PROTECTION, FLAGS, -1, 0);
+    if (bufs == MAP_FAILED) {
+        VLOG_FATAL("mmap hugetlb fails %s", ovs_strerror(errno)); 
+    }
+#else
     ovs_assert(posix_memalign(&bufs, getpagesize(), /* PAGE_SIZE aligned */
                    NUM_FRAMES * FRAME_SIZE) == 0);
-
+#endif
     VLOG_INFO("%s shared umem from %p to %p", __func__,
               bufs, (char*)bufs + NUM_FRAMES * FRAME_SIZE);
 
@@ -1477,9 +1491,12 @@ netdev_linux_destruct(struct netdev *netdev_)
 
     if (is_afxdp_netdev(netdev_)) {
         int ifindex;
+        struct netdev_linux *netdev = netdev_linux_cast(netdev_);
 
         get_ifindex(netdev_, &ifindex);
         bpf_set_link_xdp_fd(ifindex, -1, XDP_FLAGS_SKB_MODE);
+        munmap(netdev->xsk[0]->umem->frames, NUM_FRAMES * FRAME_SIZE);
+        VLOG_INFO("destruct afxdp device");
     }
 
     ovs_mutex_destroy(&netdev->mutex);
@@ -1516,7 +1533,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 6; // FIXME
+        int xdp_queue_id = 15; // FIXME
         int key = 0;
         int xsk_fd;
 
