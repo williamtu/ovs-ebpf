@@ -337,28 +337,27 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     // initialize the umem->frame
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
         struct umem_elem *elem;
-     //   struct dp_packet_afxdp *xpacket;
-     //   struct dp_packet *packet;
-     //   char *base;
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         umem_elem_push(&umem->head, elem); 
         VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
+    }
 
-#if 0
-        xpacket = (struct dp_packet_afxdp *)elem;
+    for (i = NUM_FRAMES - 1; i >= 0; i--) {
+        struct dp_packet_afxdp *xpacket;
+        struct dp_packet *packet;
+        char *base;
+
+        base = (char *)umem->frames + i * FRAME_SIZE;
+#if 1 
+        xpacket = (struct dp_packet_afxdp *)base;
         xpacket->freelist_head = &umem->head;
 
         packet = &xpacket->packet;
         packet->source = DPBUF_AFXDP;
 
-        base = (char *)elem + FRAME_HEADROOM;
-        dp_packet_use(packet, base, 1024);
-        dp_packet_set_data(packet, base);
-        dp_packet_set_size(packet, 98);
-        dp_packet_set_rss_hash(packet, 0x17802c29);
-        dp_packet_reset_cutlen(packet);
-        packet->packet_type = htonl(PT_ETH);
+        dp_packet_use(packet, base + FRAME_HEADROOM, 2048);
+//        dp_packet_set_rss_hash(packet, 0x17802c29);
 #endif
     }
     VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
@@ -1205,6 +1204,15 @@ netdev_linux_miimon_enabled(void)
     return atomic_count_get(&miimon_cnt) > 0;
 }
 
+struct nl_sock {
+    int fd;
+    uint32_t next_seq;
+    uint32_t pid;
+    int protocol;
+    unsigned int rcvbuf;        /* Receive buffer size (SO_RCVBUF). */
+};
+
+
 static void
 netdev_linux_run(const struct netdev_class *netdev_class OVS_UNUSED)
 {
@@ -1494,7 +1502,7 @@ netdev_linux_destruct(struct netdev *netdev_)
         struct netdev_linux *netdev = netdev_linux_cast(netdev_);
 
         get_ifindex(netdev_, &ifindex);
-        bpf_set_link_xdp_fd(ifindex, -1, XDP_FLAGS_SKB_MODE);
+        bpf_set_link_xdp_fd(ifindex, -1, XDP_FLAGS_DRV_MODE);
         munmap(netdev->xsk[0]->umem->frames, NUM_FRAMES * FRAME_SIZE);
         VLOG_INFO("destruct afxdp device");
     }
@@ -1533,7 +1541,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 15; // FIXME
+        int xdp_queue_id = 13; // FIXME
         int key = 0;
         int xsk_fd;
 
@@ -1706,6 +1714,7 @@ netdev_linux_rxq_recv_sock(int fd, struct dp_packet *buffer)
     msgh.msg_flags = 0;
 
     do {
+        VLOG_WARN("%s fd = %d", __func__, fd);
         retval = recvmsg(fd, &msgh, MSG_TRUNC);
     } while (retval < 0 && errno == EINTR);
 
@@ -1766,7 +1775,7 @@ netdev_linux_rxq_recv_tap(int fd, struct dp_packet *buffer)
 }
 
 /* Receive packet from AF_XDP socket */
-static int
+static inline int
 netdev_linux_rxq_xsk(struct xdpsock *xsk,
                      struct dp_packet_batch *batch)
 {
@@ -1789,21 +1798,18 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
 
         //xpacket = xmalloc(sizeof *xpacket);
         xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
+//        VLOG_WARN("rcvd %d base %p xpacket->free_list %p", rcvd, base, xpacket->freelist_head);
         packet = &xpacket->packet;
-        xpacket->freelist_head = &xsk->umem->head; 
+//        xpacket->freelist_head = &xsk->umem->head; 
 
-        base = xq_get_data(xsk, descs[i].addr);
-#ifdef DEBUG
-        vlog_hex_dump(base, 14);
-#endif
-        dp_packet_use(packet, (char *)base, descs[i].len);
+//        dp_packet_use(packet, (char *)base, descs[i].len);
 
         packet->source = DPBUF_AFXDP;
-        dp_packet_set_data(packet, base);
+//        dp_packet_set_data(packet, base);
         dp_packet_set_size(packet, descs[i].len);
 
         /* add packet into batch, batch->count inc */
-        dp_packet_set_rss_hash(packet, 0x17802c29);
+        //dp_packet_set_rss_hash(packet, 0x17802c29);
         dp_packet_batch_add(batch, packet);
     }
 #endif
@@ -1850,10 +1856,15 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
                                            DP_NETDEV_HEADROOM);
     }
 
+    if (is_afxdp_netdev(netdev)) {
+        return netdev_linux_rxq_xsk(netdev_->xsk[0], batch);
+    }
+   
     retval = (rx->is_tap
               ? netdev_linux_rxq_recv_tap(rx->fd, buffer) :
-              (is_afxdp_netdev(netdev) ?      netdev_linux_rxq_xsk(netdev_->xsk[0], batch) :
+              (is_afxdp_netdev(netdev) ? netdev_linux_rxq_xsk(netdev_->xsk[0], batch) :
                                         netdev_linux_rxq_recv_sock(rx->fd, buffer)));
+
     if (retval) {
         if (retval != EAGAIN && retval != EMSGSIZE) {
             VLOG_WARN_RL(&rl, "error receiving Ethernet packet on %s: %s",
@@ -3257,7 +3268,7 @@ netdev_linux_set_xdp__(struct netdev *netdev_, const struct bpf_prog *prog,
         }
         netdev->cache_valid &= ~valid_bit;
     }
-    error = bpf_set_link_xdp_fd(ifindex, prog->fd, XDP_FLAGS_SKB_MODE);
+    error = bpf_set_link_xdp_fd(ifindex, prog->fd, XDP_FLAGS_DRV_MODE);
     if (error < 0) {
         VLOG_WARN_RL(&rl, "%s: adding XDP filter %s failed: %s",
                      netdev_name, prog->name, ovs_strerror(error));
@@ -3952,12 +3963,12 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     return error;
 }
 
-#define NETDEV_LINUX_CLASS(NAME, CONSTRUCT, GET_STATS,          \
+#define NETDEV_LINUX_CLASS(NAME, PMD, CONSTRUCT, GET_STATS,          \
                            GET_FEATURES, GET_STATUS,            \
                            FLOW_OFFLOAD_API)                    \
 {                                                               \
     NAME,                                                       \
-    false,                      /* is_pmd */                    \
+    PMD,                      /* is_pmd */                    \
                                                                 \
     NULL,                                                       \
     netdev_linux_run,                                           \
@@ -4035,6 +4046,7 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
 const struct netdev_class netdev_afxdp_class =
     NETDEV_LINUX_CLASS(
         "afxdp",
+        true,
         netdev_linux_construct,
         netdev_linux_get_stats,
         netdev_linux_get_features,
@@ -4044,6 +4056,7 @@ const struct netdev_class netdev_afxdp_class =
 const struct netdev_class netdev_linux_class =
     NETDEV_LINUX_CLASS(
         "system",
+        false,
         netdev_linux_construct,
         netdev_linux_get_stats,
         netdev_linux_get_features,
@@ -4053,6 +4066,7 @@ const struct netdev_class netdev_linux_class =
 const struct netdev_class netdev_tap_class =
     NETDEV_LINUX_CLASS(
         "tap",
+        false,
         netdev_linux_construct_tap,
         netdev_tap_get_stats,
         netdev_linux_get_features,
@@ -4062,6 +4076,7 @@ const struct netdev_class netdev_tap_class =
 const struct netdev_class netdev_internal_class =
     NETDEV_LINUX_CLASS(
         "internal",
+        false,
         netdev_linux_construct,
         netdev_internal_get_stats,
         NULL,                  /* get_features */

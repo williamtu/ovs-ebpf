@@ -29,7 +29,7 @@
 #include "ovs-atomic.h"
 #include "xdpsock.h"
 
-void
+inline void
 umem_elem_push(struct umem_elem_head *head,
                struct umem_elem *elem)
 {
@@ -43,7 +43,7 @@ umem_elem_push(struct umem_elem_head *head,
 //    ovs_mutex_unlock(&head->mutex);
 }
 
-struct umem_elem *
+inline struct umem_elem *
 umem_elem_pop(struct umem_elem_head *head)
 {
     struct umem_elem *next, *new_head;
@@ -61,7 +61,7 @@ umem_elem_pop(struct umem_elem_head *head)
     return next;
 }
 
-unsigned int
+inline unsigned int
 umem_elem_count(struct umem_elem_head *head)
 {
     return head->n;

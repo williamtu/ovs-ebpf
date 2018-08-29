@@ -4177,7 +4177,7 @@ reload:
 
     /* List port/core affinity */
     for (i = 0; i < poll_cnt; i++) {
-       VLOG_DBG("Core %d processing port \'%s\' with queue-id %d\n",
+       VLOG_WARN("Core %d processing port \'%s\' with queue-id %d\n",
                 pmd->core_id, netdev_rxq_get_name(poll_list[i].rxq->rx),
                 netdev_rxq_get_queue_id(poll_list[i].rxq->rx));
        /* Reset the rxq current cycles counter. */
