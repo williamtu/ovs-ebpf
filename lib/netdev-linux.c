@@ -1546,7 +1546,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 13; // FIXME
+        int xdp_queue_id = 12; // FIXME
         //int xdp_queue_id = 0; // FIXME
         int key = 0;
         int xsk_fd;
@@ -1944,7 +1944,7 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         // FIXME: find available id
         //VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
         elem = umem_elem_pop(&xsk->umem->head);
-        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
+//        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
 
         if (!elem) {
             VLOG_ERR("no available elem!");
@@ -1961,8 +1961,8 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 //    VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
-            VLOG_INFO("TX from umem: head %p push back %p magic %x",
-                  xpacket->freelist_head, dp_packet_base(packet), xpacket->magic);
+//            VLOG_INFO("TX from umem: head %p push back %p magic %x",
+//                  xpacket->freelist_head, dp_packet_base(packet), xpacket->magic);
             umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
             xpacket->freelist_head = NULL; // so we won't free it twice
             //FIXME:
