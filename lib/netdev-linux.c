@@ -529,7 +529,7 @@ static void kick_tx(int fd)
     int ret;
 
     ret = sendto(fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
-    if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN) {
+    if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
         return;
     } else {
         VLOG_FATAL("sendto fails %s", ovs_strerror(errno));
@@ -1932,8 +1932,9 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
     // see tx_only and xq_enq_tx_only
     if (xq_nb_free(uq, ndescs) < ndescs) {
-        VLOG_ERR("no free desc");
-        return -ENOSPC;
+        VLOG_ERR("no free desc, outstanding tx %d, free tx nb %d",
+                    xsk->outstanding_tx, xq_nb_free(uq, ndescs));
+        return -EAGAIN;
     }
 
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
@@ -1976,16 +1977,19 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
 //    complete_tx_only(xsk);
 	u64 descs[BATCH_SIZE];
-	unsigned int rcvd;
+	unsigned int rcvd, total_tx = 0;
     int i;
 
+retry:
 	kick_tx(xsk->sfd);
 
 	rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
 	if (rcvd > 0) {
 			xsk->outstanding_tx -= rcvd;
 			xsk->tx_npkts += rcvd;
+            total_tx += rcvd;
 	}
+
   //  VLOG_INFO("%s complete %d tx", __func__, rcvd);
     for (i = 0; i < rcvd; i++) {
         struct umem_elem *elem;
@@ -1998,6 +2002,9 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 #endif
     }
 
+    if (total_tx < batch->count) {
+        goto retry;
+    }
     //print_xsk_stat(xsk);
 
     return 0;
@@ -2133,6 +2140,9 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
         xsk = netdev->xsk[0]; // FIXME: always use queue 0
 //        VLOG_INFO_RL(&rl, "XXX %s sent to AFXDP dev xsk %d", __func__, xsk->sfd);
         error = netdev_linux_afxdp_batch_send(xsk, batch);
+        if (error == -EAGAIN)
+            error = netdev_linux_afxdp_batch_send(xsk, batch);
+
     } else {
         VLOG_INFO_RL(&rl, "%s sent to tap dev", __func__);
         error = netdev_linux_tap_batch_send(netdev_, batch);
