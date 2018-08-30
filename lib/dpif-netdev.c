@@ -4939,7 +4939,6 @@ dpif_netdev_packet_get_rss_hash_orig_pkt(struct dp_packet *packet,
         hash = dp_packet_get_rss_hash(packet);
     } else {
         hash = miniflow_hash_5tuple(mf, 0);
-VLOG_INFO("hash %x", hash);
         dp_packet_set_rss_hash(packet, hash);
     }
 

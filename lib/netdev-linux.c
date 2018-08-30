@@ -106,6 +106,8 @@ typedef uint64_t u64;
 
 #include "lib/xdpsock.h"
 
+#define AFXDP_MODE XDP_FLAGS_DRV_MODE // DRV_MODE or SKB_MODE 
+
 static u32 opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
 static u32 opt_xdp_bind_flags;
 
@@ -332,7 +334,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     umem->fd = sfd;
     umem->head.next = NULL;
     umem->head.n = 0;
-    //ovs_mutex_init(&umem->head.mutex);
+    ovs_mutex_init(&umem->head.mutex);
 
     // initialize the umem->frame
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
@@ -352,11 +354,13 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 #if 1 
         xpacket = (struct dp_packet_afxdp *)base;
         xpacket->freelist_head = &umem->head;
+        xpacket->magic = 0x201314;
 
         packet = &xpacket->packet;
         packet->source = DPBUF_AFXDP;
 
-        dp_packet_use(packet, base + FRAME_HEADROOM, 2048);
+        dp_packet_use(packet, base + FRAME_HEADROOM, 1024);
+
 //        dp_packet_set_rss_hash(packet, 0x17802c29);
 #endif
     }
@@ -384,7 +388,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
     socklen_t optlen;
     u64 i;
 
-    opt_xdp_flags |= XDP_FLAGS_DRV_MODE;
+    opt_xdp_flags |= AFXDP_MODE;
     opt_xdp_bind_flags |= XDP_COPY;
 
     sfd = socket(PF_XDP, SOCK_RAW, 0);
@@ -524,11 +528,12 @@ static void kick_tx(int fd)
 {
     int ret;
 
-    VLOG_DBG("%s: send to fd %d", __func__, fd);
     ret = sendto(fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
-    if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN)
+    if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN) {
         return;
-    ovs_assert(0);
+    } else {
+        VLOG_FATAL("sendto fails %s", ovs_strerror(errno));
+    }
 }
 
 static inline void complete_tx_l2fwd(struct xdpsock *xsk)
@@ -1502,7 +1507,7 @@ netdev_linux_destruct(struct netdev *netdev_)
         struct netdev_linux *netdev = netdev_linux_cast(netdev_);
 
         get_ifindex(netdev_, &ifindex);
-        bpf_set_link_xdp_fd(ifindex, -1, XDP_FLAGS_DRV_MODE);
+        bpf_set_link_xdp_fd(ifindex, -1, AFXDP_MODE);
         munmap(netdev->xsk[0]->umem->frames, NUM_FRAMES * FRAME_SIZE);
         VLOG_INFO("destruct afxdp device");
     }
@@ -1542,6 +1547,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
         int xdp_queue_id = 13; // FIXME
+        //int xdp_queue_id = 0; // FIXME
         int key = 0;
         int xsk_fd;
 
@@ -1714,7 +1720,6 @@ netdev_linux_rxq_recv_sock(int fd, struct dp_packet *buffer)
     msgh.msg_flags = 0;
 
     do {
-        VLOG_WARN("%s fd = %d", __func__, fd);
         retval = recvmsg(fd, &msgh, MSG_TRUNC);
     } while (retval < 0 && errno == EINTR);
 
@@ -1800,7 +1805,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
 //        VLOG_WARN("rcvd %d base %p xpacket->free_list %p", rcvd, base, xpacket->freelist_head);
         packet = &xpacket->packet;
-//        xpacket->freelist_head = &xsk->umem->head; 
+        xpacket->freelist_head = &xsk->umem->head; 
 
 //        dp_packet_use(packet, (char *)base, descs[i].len);
 
@@ -1937,15 +1942,15 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
         u32 idx = uq->cached_prod++ & uq->mask;
         // FIXME: find available id
-  //      VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
+        //VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
         elem = umem_elem_pop(&xsk->umem->head);
-//        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
+        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
 
         if (!elem) {
             VLOG_ERR("no available elem!");
             OVS_NOT_REACHED();
         }
-  //      VLOG_INFO("elem %p", elem);
+//      VLOG_INFO("elem %p", elem);
 
         memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
 
@@ -1953,35 +1958,20 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
         r[idx].len = dp_packet_size(packet);
 
-    //    VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
-       
+//    VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
         if (packet->source == DPBUF_AFXDP) {
-
             xpacket = dp_packet_cast_afxdp(packet);
-      //      VLOG_INFO("TX from umem: head %p push back %p",
-      //            xpacket->freelist_head, dp_packet_base(packet));
+            VLOG_INFO("TX from umem: head %p push back %p magic %x",
+                  xpacket->freelist_head, dp_packet_base(packet), xpacket->magic);
             umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
             xpacket->freelist_head = NULL; // so we won't free it twice
+            //FIXME:
         }
-// else {
-        //    VLOG_INFO("TX from malloc");
-//        }
-#if 0 /* avoid copy */
-        } else {
-            u32 idx = uq->cached_prod++ & uq->mask;
-
-            VLOG_WARN("packet from umem %p", dp_packet_base(packet));
-            vlog_hex_dump(dp_packet_base(packet), 14);
-
-            r[idx].addr = (u64)(u64 *)dp_packet_base(packet);
-            r[idx].len = dp_packet_size(packet);
-        }
-#endif
     }
+
     u_smp_wmb();
 
     *uq->producer = uq->cached_prod;
-
     xsk->outstanding_tx += batch->count;
 
 //    complete_tx_only(xsk);
@@ -3268,7 +3258,7 @@ netdev_linux_set_xdp__(struct netdev *netdev_, const struct bpf_prog *prog,
         }
         netdev->cache_valid &= ~valid_bit;
     }
-    error = bpf_set_link_xdp_fd(ifindex, prog->fd, XDP_FLAGS_DRV_MODE);
+    error = bpf_set_link_xdp_fd(ifindex, prog->fd, AFXDP_MODE);
     if (error < 0) {
         VLOG_WARN_RL(&rl, "%s: adding XDP filter %s failed: %s",
                      netdev_name, prog->name, ovs_strerror(error));
@@ -3956,9 +3946,9 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
     int error;
 
-    ovs_mutex_lock(&netdev->mutex);
+//    ovs_mutex_lock(&netdev->mutex);
     error = update_flags(netdev, off, on, old_flagsp);
-    ovs_mutex_unlock(&netdev->mutex);
+//    ovs_mutex_unlock(&netdev->mutex);
 
     return error;
 }

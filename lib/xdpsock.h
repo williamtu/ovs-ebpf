@@ -33,13 +33,19 @@
 #define FRAME_SIZE 2048
 #define BATCH_SIZE NETDEV_MAX_BURST 
 
+//#define DEBUG
+#ifdef DEBUG
+#define NUM_FRAMES 1024
+#define NUM_DESCS 64
+#define FQ_NUM_DESCS 32
+#define CQ_NUM_DESCS 32
+#else
 //#define NUM_FRAMES 131072
 #define NUM_FRAMES 10240
-#define FRAME_SIZE 2048
 #define NUM_DESCS 1024
-
 #define FQ_NUM_DESCS 1024
 #define CQ_NUM_DESCS 1024
+#endif
 
 struct umem_elem_head {
     struct umem_elem *next;
