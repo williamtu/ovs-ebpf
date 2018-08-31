@@ -1546,7 +1546,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 12; // FIXME
+        int xdp_queue_id = 9; // FIXME
         //int xdp_queue_id = 0; // FIXME
         int key = 0;
         int xsk_fd;
@@ -1977,11 +1977,11 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
 //    complete_tx_only(xsk);
 	u64 descs[BATCH_SIZE];
-	unsigned int rcvd, total_tx = 0;
+	unsigned int rcvd = 0, total_tx = 0;
     int i;
 
 retry:
-	kick_tx(xsk->sfd);
+    kick_tx(xsk->sfd);
 
 	rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
 	if (rcvd > 0) {

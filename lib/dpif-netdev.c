@@ -3271,6 +3271,7 @@ dp_netdev_pmd_flush_output_on_port(struct dp_netdev_pmd_thread *pmd,
     output_cnt = dp_packet_batch_size(&p->output_pkts);
     ovs_assert(output_cnt > 0);
 
+    // call to netdev_linux_send
     netdev_send(p->port->netdev, tx_qid, &p->output_pkts, dynamic_txqs);
     dp_packet_batch_init(&p->output_pkts);
 
@@ -3309,8 +3310,8 @@ dp_netdev_pmd_flush_output_packets(struct dp_netdev_pmd_thread *pmd,
     }
 
     HMAP_FOR_EACH (p, node, &pmd->send_port_cache) {
-        if (!dp_packet_batch_is_empty(&p->output_pkts)
-            && (force || pmd->ctx.now >= p->flush_time)) {
+        if (!dp_packet_batch_is_empty(&p->output_pkts)) {
+//            && (force || pmd->ctx.now >= p->flush_time)) {
             output_cnt += dp_netdev_pmd_flush_output_on_port(pmd, p);
         }
     }
@@ -4113,7 +4114,7 @@ pmd_alloc_static_tx_qid(struct dp_netdev_pmd_thread *pmd)
     }
     ovs_mutex_unlock(&pmd->dp->tx_qid_pool_mutex);
 
-    VLOG_DBG("static_tx_qid = %d allocated for PMD thread on core %2d"
+    VLOG_INFO("static_tx_qid = %d allocated for PMD thread on core %2d"
              ", numa_id %d.", pmd->static_tx_qid, pmd->core_id, pmd->numa_id);
 }
 
