@@ -342,7 +342,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         umem_elem_push(&umem->head, elem); 
-        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
+//        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
     }
 
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
@@ -400,7 +400,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
     xsk->sfd = sfd;
     xsk->outstanding_tx = 0;
 
-    VLOG_DBG("enter: %s xsk fd %d", __func__, sfd);
+    VLOG_INFO("enter: %s xsk fd %d", __func__, sfd);
     if (!umem) {
         shared = false;
         xsk->umem = xdp_umem_configure(sfd);
@@ -439,7 +439,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
 
         elem = umem_elem_pop(&xsk->umem->head);
         desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
-        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->head));
+//        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->head));
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
 
@@ -527,6 +527,13 @@ static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
 static void kick_tx(int fd)
 {
     int ret;
+    struct pollfd txfd;
+
+    txfd.fd = fd;
+    txfd.events = POLLOUT;
+
+    if (poll(&txfd, 1, -1) <= 0)
+        return;
 
     ret = sendto(fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
     if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
@@ -1367,6 +1374,12 @@ netdev_linux_update(struct netdev_linux *dev,
     }
 }
 
+static int
+netdev_linux_get_numa_id(const struct netdev *netdev)
+{
+    return 0; 
+}
+
 static struct netdev *
 netdev_linux_alloc(void)
 {
@@ -1546,7 +1559,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 9; // FIXME
+        int xdp_queue_id = 4; // FIXME
         //int xdp_queue_id = 0; // FIXME
         int key = 0;
         int xsk_fd;
@@ -3963,9 +3976,9 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     return error;
 }
 
-#define NETDEV_LINUX_CLASS(NAME, PMD, CONSTRUCT, GET_STATS,          \
+#define NETDEV_LINUX_CLASS(NAME, PMD, CONSTRUCT, NUMA_ID, GET_STATS,          \
                            GET_FEATURES, GET_STATUS,            \
-                           FLOW_OFFLOAD_API)                    \
+                           RXQ_WAIT, FLOW_OFFLOAD_API)                    \
 {                                                               \
     NAME,                                                       \
     PMD,                      /* is_pmd */                    \
@@ -3984,7 +3997,7 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     NULL,                       /* build header */              \
     NULL,                       /* push header */               \
     NULL,                       /* pop header */                \
-    NULL,                       /* get_numa_id */               \
+    NUMA_ID,                       /* get_numa_id */               \
     NULL,                       /* set_tx_multiq */             \
                                                                 \
     netdev_linux_send,                                          \
@@ -4037,7 +4050,7 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     netdev_linux_rxq_destruct,                                  \
     netdev_linux_rxq_dealloc,                                   \
     netdev_linux_rxq_recv,                                      \
-    netdev_linux_rxq_wait,                                      \
+    RXQ_WAIT, \
     netdev_linux_rxq_drain,                                     \
                                                                 \
     FLOW_OFFLOAD_API                                            \
@@ -4048,9 +4061,11 @@ const struct netdev_class netdev_afxdp_class =
         "afxdp",
         true,
         netdev_linux_construct,
+        netdev_linux_get_numa_id,
         netdev_linux_get_stats,
         netdev_linux_get_features,
         netdev_linux_get_status,
+        NULL,
         LINUX_FLOW_OFFLOAD_API);
 
 const struct netdev_class netdev_linux_class =
@@ -4058,9 +4073,11 @@ const struct netdev_class netdev_linux_class =
         "system",
         false,
         netdev_linux_construct,
+        NULL,
         netdev_linux_get_stats,
         netdev_linux_get_features,
         netdev_linux_get_status,
+        netdev_linux_rxq_wait,
         LINUX_FLOW_OFFLOAD_API);
 
 const struct netdev_class netdev_tap_class =
@@ -4068,9 +4085,11 @@ const struct netdev_class netdev_tap_class =
         "tap",
         false,
         netdev_linux_construct_tap,
+        NULL,
         netdev_tap_get_stats,
         netdev_linux_get_features,
         netdev_linux_get_status,
+        netdev_linux_rxq_wait,
         NO_OFFLOAD_API);
 
 const struct netdev_class netdev_internal_class =
@@ -4078,9 +4097,11 @@ const struct netdev_class netdev_internal_class =
         "internal",
         false,
         netdev_linux_construct,
+        NULL,
         netdev_internal_get_stats,
         NULL,                  /* get_features */
         netdev_internal_get_status,
+        netdev_linux_rxq_wait,
         NO_OFFLOAD_API);
 
 
