@@ -3729,7 +3729,8 @@ reconfigure_pmd_threads(struct dp_netdev *dp)
 
         VLOG_INFO("%s NO pmd_cmask is provided", __func__);
         //pmd_cores = ovs_numa_dump_n_cores_per_numa(NR_PMD_THREADS);
-        pmd_cores = ovs_numa_dump_n_cores_per_numa(0x8);
+        //pmd_cores = ovs_numa_dump_n_cores_per_numa(0x8);
+        pmd_cores = ovs_numa_dump_n_cores_per_numa(6);
     }
 
     /* We need to adjust 'static_tx_qid's only if we're reducing number of
@@ -4003,7 +4004,6 @@ dpif_netdev_run(struct dpif *dpif)
     ovs_mutex_lock(&dp->port_mutex);
     non_pmd = dp_netdev_get_pmd(dp, NON_PMD_CORE_ID);
     if (non_pmd) {
-VLOG_WARN("%s non pmd", __func__);
         ovs_mutex_lock(&dp->non_pmd_mutex);
         HMAP_FOR_EACH (port, node, &dp->ports) {
             if (!netdev_is_pmd(port->netdev)) {
