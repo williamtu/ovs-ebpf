@@ -37,8 +37,8 @@
 #ifdef DEBUG
 #define NUM_FRAMES 1024
 #define NUM_DESCS 64
-#define FQ_NUM_DESCS 32
-#define CQ_NUM_DESCS 32
+#define FQ_NUM_DESCS 64
+#define CQ_NUM_DESCS 64
 #else
 //#define NUM_FRAMES 131072
 #define NUM_FRAMES 10240

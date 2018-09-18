@@ -1546,7 +1546,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 9; // FIXME
+        int xdp_queue_id = 3; // FIXME
         //int xdp_queue_id = 0; // FIXME
         int key = 0;
         int xsk_fd;
@@ -1785,7 +1785,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
                      struct dp_packet_batch *batch)
 {
     struct xdp_desc descs[NETDEV_MAX_BURST];
-    unsigned int rcvd, i = 0;
+    unsigned int rcvd, i = 0, non_afxdp = 0;
     int ret = 0;
 
     rcvd = xq_deq(&xsk->rx, descs, NETDEV_MAX_BURST);
@@ -1807,8 +1807,12 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         packet = &xpacket->packet;
         xpacket->freelist_head = &xsk->umem->head; 
 
-//        dp_packet_use(packet, (char *)base, descs[i].len);
+        if (packet->source != DPBUF_AFXDP && packet->source != 0) {
+            non_afxdp++;
+            continue;
+        }
 
+        dp_packet_use(packet, (char *)base, descs[i].len);
         packet->source = DPBUF_AFXDP;
 //        dp_packet_set_data(packet, base);
         dp_packet_set_size(packet, descs[i].len);
@@ -1818,7 +1822,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         dp_packet_batch_add(batch, packet);
     }
 #endif
-
+    rcvd -= non_afxdp;
     xsk->rx_npkts += rcvd;
 
     for (i = 0; i < rcvd; i++) {
