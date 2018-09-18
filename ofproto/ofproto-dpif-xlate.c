@@ -4820,11 +4820,11 @@ xlate_output_action(struct xlate_ctx *ctx, ofp_port_t port,
         break;
     case OFPP_LOCAL:
     default:
-//        if (port != ctx->xin->flow.in_port.ofp_port) {
+        if (port != ctx->xin->flow.in_port.ofp_port) {
             compose_output_action(ctx, port, NULL, is_last_action, truncate);
-//        } else {
-//            xlate_report(ctx, OFT_WARN, "skipping output to input port");
-//        }
+        } else {
+            xlate_report(ctx, OFT_WARN, "skipping output to input port");
+        }
         break;
     }
 

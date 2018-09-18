@@ -3126,17 +3126,15 @@ dpif_netdev_port_set_rxq_affinity(struct dp_netdev_port *port,
     int error = 0;
 
     core_ids = xmalloc(port->n_rxq * sizeof *core_ids);
-VLOG_INFO("affinity list %s", affinity_list);
     if (parse_affinity_list(affinity_list, core_ids, port->n_rxq)) {
         error = EINVAL;
-        VLOG_ERR("%s ", __func__);
         goto exit;
     }
 
     for (i = 0; i < port->n_rxq; i++) {
         port->rxqs[i].core_id = core_ids[i];
-        VLOG_INFO("%s n_rxq %d core_id %d", __func__, port->n_rxq, port->rxqs[i].core_id) ;
     }
+
 exit:
     free(core_ids);
     return error;
@@ -3718,18 +3716,11 @@ reconfigure_pmd_threads(struct dp_netdev *dp)
      * datapath.  If the user didn't provide any "pmd-cpu-mask", we start
      * NR_PMD_THREADS per numa node. */
     if (!has_pmd_port(dp)) {
-
-        VLOG_INFO("%s no pmd port", __func__);
         pmd_cores = ovs_numa_dump_n_cores_per_numa(0);
-
     } else if (dp->pmd_cmask && dp->pmd_cmask[0]) {
-        VLOG_INFO("%s pmd_cmask is provided", __func__);
         pmd_cores = ovs_numa_dump_cores_with_cmask(dp->pmd_cmask);
     } else {
-
-        VLOG_INFO("%s NO pmd_cmask is provided", __func__);
-        //pmd_cores = ovs_numa_dump_n_cores_per_numa(NR_PMD_THREADS);
-        pmd_cores = ovs_numa_dump_n_cores_per_numa(0x8);
+        pmd_cores = ovs_numa_dump_n_cores_per_numa(NR_PMD_THREADS);
     }
 
     /* We need to adjust 'static_tx_qid's only if we're reducing number of
@@ -3743,18 +3734,14 @@ reconfigure_pmd_threads(struct dp_netdev *dp)
 
     /* Check for unwanted pmd threads */
     CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
-
-        VLOG_INFO("%s core_id %d", __func__, pmd->core_id);
         if (pmd->core_id == NON_PMD_CORE_ID) {
             continue;
         }
         if (!ovs_numa_dump_contains_core(pmd_cores, pmd->numa_id,
                                                     pmd->core_id)) {
             hmapx_add(&to_delete, pmd);
-            VLOG_INFO("add to delete");
         } else if (need_to_adjust_static_tx_qids) {
             pmd->need_reload = true;
-            VLOG_INFO("need reload");
         }
     }
 
@@ -4003,7 +3990,6 @@ dpif_netdev_run(struct dpif *dpif)
     ovs_mutex_lock(&dp->port_mutex);
     non_pmd = dp_netdev_get_pmd(dp, NON_PMD_CORE_ID);
     if (non_pmd) {
-VLOG_WARN("%s non pmd", __func__);
         ovs_mutex_lock(&dp->non_pmd_mutex);
         HMAP_FOR_EACH (port, node, &dp->ports) {
             if (!netdev_is_pmd(port->netdev)) {

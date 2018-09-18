@@ -41,7 +41,7 @@
 #define CQ_NUM_DESCS 32
 #else
 //#define NUM_FRAMES 131072
-#define NUM_FRAMES 102400
+#define NUM_FRAMES 10240
 #define NUM_DESCS 1024
 #define FQ_NUM_DESCS 1024
 #define CQ_NUM_DESCS 1024
