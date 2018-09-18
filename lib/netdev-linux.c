@@ -106,7 +106,7 @@ typedef uint64_t u64;
 
 #include "lib/xdpsock.h"
 
-#define AFXDP_MODE XDP_FLAGS_SKB_MODE // DRV_MODE or SKB_MODE 
+#define AFXDP_MODE XDP_FLAGS_DRV_MODE // DRV_MODE or SKB_MODE 
 
 static u32 opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
 static u32 opt_xdp_bind_flags;
@@ -269,7 +269,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
     VLOG_DBG("enter: %s \n", __func__);
 
-//#define HUGETLB
+#define HUGETLB
 #define ADDR (void *)(0x0UL)
 #define FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB)
 #define PROTECTION (PROT_READ | PROT_WRITE)
@@ -342,6 +342,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         umem_elem_push(&umem->head, elem); 
+//        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
     }
 
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
@@ -360,6 +361,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         dp_packet_use(packet, base + FRAME_HEADROOM, 1024);
 
+//        dp_packet_set_rss_hash(packet, 0x17802c29);
 #endif
     }
     VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
@@ -387,8 +389,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
     u64 i;
 
     opt_xdp_flags |= AFXDP_MODE;
-    opt_xdp_bind_flags |= XDP_COPY; //or XDP_ZEROCOPY
-    //opt_xdp_bind_flags |= XDP_ZEROCOPY; //or XDP_ZEROCOPY
+    opt_xdp_bind_flags |= XDP_COPY;
 
     sfd = socket(PF_XDP, SOCK_RAW, 0);
     ovs_assert(sfd >= 0);
@@ -1558,7 +1559,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
         struct xdpsock *xsk;
-        int xdp_queue_id = 1;
+        int xdp_queue_id = 4; // FIXME
         //int xdp_queue_id = 0; // FIXME
         int key = 0;
         int xsk_fd;
@@ -1813,7 +1814,6 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
 
         base = xq_get_data(xsk, descs[i].addr);
 
-        vlog_hex_dump(base, 14);
         //xpacket = xmalloc(sizeof *xpacket);
         xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
 //        VLOG_WARN("rcvd %d base %p xpacket->free_list %p", rcvd, base, xpacket->freelist_head);
@@ -1821,10 +1821,9 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         xpacket->freelist_head = &xsk->umem->head; 
 
 //        dp_packet_use(packet, (char *)base, descs[i].len);
-	if (packet->source != DPBUF_AFXDP)
-		continue;
-//	ovs_assert(packet->source == DPBUF_AFXDP);
-        dp_packet_set_data(packet, base);
+
+        packet->source = DPBUF_AFXDP;
+//        dp_packet_set_data(packet, base);
         dp_packet_set_size(packet, descs[i].len);
 
         /* add packet into batch, batch->count inc */
@@ -4066,7 +4065,7 @@ const struct netdev_class netdev_afxdp_class =
         netdev_linux_get_stats,
         netdev_linux_get_features,
         netdev_linux_get_status,
-        netdev_linux_rxq_wait, // or NULL?
+        NULL,
         LINUX_FLOW_OFFLOAD_API);
 
 const struct netdev_class netdev_linux_class =

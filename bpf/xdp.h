@@ -68,7 +68,6 @@ static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
 #endif
 }
 
-#define DEBUG
 #ifdef DEBUG
 #define AFXDP_REDIRECT(xskmap) { \
     int idx = 0; \

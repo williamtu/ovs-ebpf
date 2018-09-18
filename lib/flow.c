@@ -41,11 +41,10 @@
 #include "unaligned.h"
 #include "util.h"
 #include "openvswitch/nsh.h"
-#include "openvswitch/vlog.h"
 
 COVERAGE_DEFINE(flow_extract);
 COVERAGE_DEFINE(miniflow_malloc);
-VLOG_DEFINE_THIS_MODULE(flow);
+
 /* U64 indices for segmented flow classification. */
 const uint8_t flow_segment_u64s[4] = {
     FLOW_SEGMENT_1_ENDS_AT / sizeof(uint64_t),
@@ -624,15 +623,6 @@ flow_extract(struct dp_packet *packet, struct flow *flow)
     miniflow_extract(packet, &m.mf);
     miniflow_expand(&m.mf, flow);
 }
-
-static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
-{
-    struct ds ds = DS_EMPTY_INITIALIZER;
-    ds_put_hex_dump(&ds, buf, count, 0, false);
-    VLOG_EMER("\n%s", ds_cstr(&ds));
-    ds_destroy(&ds);
-}
-
 
 /* Caller is responsible for initializing 'dst' with enough storage for
  * FLOW_U64S * 8 bytes. */
