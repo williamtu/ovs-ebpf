@@ -107,7 +107,7 @@ typedef uint64_t u64;
 
 #include "lib/xdpsock.h"
 
-#define AFXDP_MODE XDP_FLAGS_SKB_MODE // DRV_MODE or SKB_MODE 
+#define AFXDP_MODE XDP_FLAGS_DRV_MODE // DRV_MODE or SKB_MODE 
 
 static u32 opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
 static u32 opt_xdp_bind_flags;
@@ -1785,19 +1785,24 @@ netdev_linux_rxq_recv_tap(int fd, struct dp_packet *buffer)
     return 0;
 }
 
+static unsigned int non_afxdp;
+
 /* Receive packet from AF_XDP socket */
 static inline int
 netdev_linux_rxq_xsk(struct xdpsock *xsk,
                      struct dp_packet_batch *batch)
 {
     struct xdp_desc descs[NETDEV_MAX_BURST];
-    unsigned int rcvd, i = 0, non_afxdp = 0;
+    unsigned int rcvd, i = 0;
     int ret = 0;
 
+    memset(descs, 0, sizeof(struct xdp_desc) * NETDEV_MAX_BURST);
     rcvd = xq_deq(&xsk->rx, descs, NETDEV_MAX_BURST);
     if (rcvd == 0) {
-        VLOG_INFO("no packet");
-        print_xsk_stat(xsk);
+        VLOG_INFO_RL(&rl, "no packet empty %d full %d",
+                    ptr_ring_empty(&xsk->umem_ring), ptr_ring_full(&xsk->umem_ring));
+        
+        //print_xsk_stat(xsk);
         return 0;
     }
 
@@ -1815,7 +1820,6 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         xpacket->umem_ring = &xsk->umem_ring;
 
         if (packet->source != DPBUF_AFXDP && packet->source != 0) {
-            VLOG_WARN("non_afxdp");
             non_afxdp++;
             continue;
         }
@@ -1830,7 +1834,8 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         dp_packet_batch_add(batch, packet);
     }
 #endif
-    rcvd -= non_afxdp;
+
+//    rcvd -= non_afxdp;
     xsk->rx_npkts += rcvd;
 
     for (i = 0; i < rcvd; i++) {
@@ -1839,7 +1844,6 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         int retry_cnt = 0;
 retry:
         elem = ptr_ring_consume(&xsk->umem_ring);
-        VLOG_WARN("elem = %p", elem);
 
         if (!elem && retry_cnt < 10) {
             retry_cnt++;
@@ -1974,7 +1978,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 //    VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
-            VLOG_INFO("umem_ring %p", xpacket->umem_ring);
             ovs_assert(ptr_ring_produce(xpacket->umem_ring, dp_packet_base(packet)) == 0);
 
             xpacket->umem_ring = NULL;
@@ -2006,16 +2009,10 @@ retry:
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
-        VLOG_INFO("umem_ring %p", &xsk->umem_ring);
         ovs_assert(ptr_ring_produce(&xsk->umem_ring, elem) == 0);
-//#ifdef DEBUG
-        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem_ring,
-                  elem);
-//#endif
     }
 
     if (total_tx < batch->count) {
-        VLOG_WARN("retry tx");
         goto retry;
     }
     //print_xsk_stat(xsk);

@@ -46,8 +46,8 @@ struct ptr_ring {
 
 void *ptr_ring_consume(struct ptr_ring *r);
 int ptr_ring_produce(struct ptr_ring *r, void *ptr);
-bool __ptr_ring_full(struct ptr_ring *r);
-bool __ptr_ring_empty(struct ptr_ring *r);
+bool ptr_ring_full(struct ptr_ring *r);
+bool ptr_ring_empty(struct ptr_ring *r);
 int ptr_ring_init(struct ptr_ring *r, int size);
 void ptr_ring_cleanup(struct ptr_ring *r);
 #endif

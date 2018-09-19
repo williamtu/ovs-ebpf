@@ -85,18 +85,39 @@ int ptr_ring_produce(struct ptr_ring *r, void *ptr)
     return ret;
 }
 
-bool __ptr_ring_full(struct ptr_ring *r)
+static inline bool __ptr_ring_full(struct ptr_ring *r)
 {
     return r->queue[r->producer];
 }
 
-bool __ptr_ring_empty(struct ptr_ring *r)
+bool ptr_ring_full(struct ptr_ring *r)
 {
-		u_smp_rmb();
+    bool ret;
+
+    ovs_mutex_lock(&r->producer_lock);
+    ret = __ptr_ring_full(r);
+    ovs_mutex_unlock(&r->producer_lock);
+
+    return ret;
+}
+
+static inline bool __ptr_ring_empty(struct ptr_ring *r)
+{
     if (OVS_LIKELY(r->size)) {
         return !r->queue[READ_ONCE(r->consumer_head)];
     }
     return true;
+}
+
+bool ptr_ring_empty(struct ptr_ring *r)
+{
+    bool ret;
+
+    ovs_mutex_lock(&r->consumer_lock);
+    ret = __ptr_ring_empty(r);
+    ovs_mutex_unlock(&r->consumer_lock);
+
+    return ret;
 }
 
 static inline void __ptr_ring_set_size(struct ptr_ring *r, int size)
