@@ -31,6 +31,7 @@
 #include "util.h"
 #include "flow.h"
 #include "xdpsock.h"
+#include "ptr_ring.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -84,7 +85,7 @@ struct dp_packet {
 struct dp_packet_afxdp {
     void *next; //point to next elem 
     uint32_t magic;
-    struct umem_elem_head *freelist_head;
+    struct ptr_ring *umem_ring;
     struct dp_packet packet;
 };
 
@@ -196,8 +197,9 @@ dp_packet_delete(struct dp_packet *b)
              * push the rx umem back here
              */
             xpacket = dp_packet_cast_afxdp(b);
-            if (xpacket->freelist_head)
-                umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
+            if (xpacket->umem_ring) {
+                ptr_ring_produce(xpacket->umem_ring, dp_packet_base(b));
+            }
 
             //free(xpacket);
             return;

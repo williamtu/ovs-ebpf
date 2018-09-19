@@ -77,6 +77,7 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
+#include "ptr_ring.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -106,7 +107,7 @@ typedef uint64_t u64;
 
 #include "lib/xdpsock.h"
 
-#define AFXDP_MODE XDP_FLAGS_DRV_MODE // DRV_MODE or SKB_MODE 
+#define AFXDP_MODE XDP_FLAGS_SKB_MODE // DRV_MODE or SKB_MODE 
 
 static u32 opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
 static u32 opt_xdp_bind_flags;
@@ -132,6 +133,7 @@ struct xdpsock {
     unsigned long tx_npkts;
     unsigned long prev_rx_npkts;
     unsigned long prev_tx_npkts;
+    struct ptr_ring umem_ring;
 };
 
 #define MAX_SOCKS 4
@@ -253,7 +255,7 @@ static inline size_t umem_complete_from_kernel(struct xdp_umem_uqueue *cq,
     return entries;
 }
 
-static struct xdp_umem *xdp_umem_configure(int sfd)
+static struct xdp_umem *xdp_umem_configure(int sfd, struct xdpsock *xsk)
 {
     int fq_size = FQ_NUM_DESCS, cq_size = CQ_NUM_DESCS;
     struct xdp_mmap_offsets off;
@@ -335,14 +337,14 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     umem->head.next = NULL;
     umem->head.n = 0;
     ovs_mutex_init(&umem->head.mutex);
+    ovs_assert(ptr_ring_init(&xsk->umem_ring, NUM_FRAMES) == 0);
 
     // initialize the umem->frame
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
-        umem_elem_push(&umem->head, elem); 
-        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
+        ovs_assert(ptr_ring_produce(&xsk->umem_ring, elem) == 0);
     }
 
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
@@ -353,7 +355,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         base = (char *)umem->frames + i * FRAME_SIZE;
 #if 1 
         xpacket = (struct dp_packet_afxdp *)base;
-        xpacket->freelist_head = &umem->head;
+        xpacket->umem_ring = &xsk->umem_ring;
         xpacket->magic = 0x201314;
 
         packet = &xpacket->packet;
@@ -365,6 +367,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 #endif
     }
     VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
+    VLOG_INFO("umem_ring %p", &xsk->umem_ring);
 
 #if 0
     if (opt_bench == BENCH_TXONLY) {
@@ -403,7 +406,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
     VLOG_DBG("enter: %s xsk fd %d", __func__, sfd);
     if (!umem) {
         shared = false;
-        xsk->umem = xdp_umem_configure(sfd);
+        xsk->umem = xdp_umem_configure(sfd, xsk);
     } else {
         xsk->umem = umem;
         ovs_assert(0);
@@ -433,13 +436,16 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
                 == 0);
     }
 */
+
     for (i = 0; i < NUM_DESCS; i++) {
         struct umem_elem *elem;
         uint64_t desc[1]; 
 
-        elem = umem_elem_pop(&xsk->umem->head);
+        elem = (struct umem_elem *)ptr_ring_consume(&xsk->umem_ring);
+        if (!elem)
+            VLOG_ERR("no element!");
+
         desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
-        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->head));
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
 
@@ -636,7 +642,7 @@ static inline int xq_enq_tx_only(struct xdp_uqueue *uq,
 }
 
 static inline void print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
-#ifdef DEBUG
+//#ifdef DEBUG
     struct xdp_statistics stat;
     socklen_t optlen;
 
@@ -646,9 +652,9 @@ static inline void print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
 
     VLOG_INFO("rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
              stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
-#else
+//#else
     return;
-#endif
+//#endif
 }
 // =========================================================
 #endif
@@ -1790,6 +1796,8 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
 
     rcvd = xq_deq(&xsk->rx, descs, NETDEV_MAX_BURST);
     if (rcvd == 0) {
+        VLOG_INFO("no packet");
+        print_xsk_stat(xsk);
         return 0;
     }
 
@@ -1803,11 +1811,11 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
 
         //xpacket = xmalloc(sizeof *xpacket);
         xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
-//        VLOG_WARN("rcvd %d base %p xpacket->free_list %p", rcvd, base, xpacket->freelist_head);
         packet = &xpacket->packet;
-        xpacket->freelist_head = &xsk->umem->head; 
+        xpacket->umem_ring = &xsk->umem_ring;
 
         if (packet->source != DPBUF_AFXDP && packet->source != 0) {
+            VLOG_WARN("non_afxdp");
             non_afxdp++;
             continue;
         }
@@ -1830,7 +1838,9 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         struct xdp_desc descs[1];
         int retry_cnt = 0;
 retry:
-        elem = umem_elem_pop(&xsk->umem->head);
+        elem = ptr_ring_consume(&xsk->umem_ring);
+        VLOG_WARN("elem = %p", elem);
+
         if (!elem && retry_cnt < 10) {
             retry_cnt++;
             VLOG_WARN("retry refilling the fill queue");
@@ -1948,14 +1958,12 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         u32 idx = uq->cached_prod++ & uq->mask;
         // FIXME: find available id
         //VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
-        elem = umem_elem_pop(&xsk->umem->head);
-//        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
-
+        //elem = umem_elem_pop(&xsk->umem->head);
+        elem = ptr_ring_consume(&xsk->umem_ring);
         if (!elem) {
             VLOG_ERR("no available elem!");
             OVS_NOT_REACHED();
         }
-//      VLOG_INFO("elem %p", elem);
 
         memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
 
@@ -1966,11 +1974,10 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 //    VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
-//            VLOG_INFO("TX from umem: head %p push back %p magic %x",
-//                  xpacket->freelist_head, dp_packet_base(packet), xpacket->magic);
-            umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
-            xpacket->freelist_head = NULL; // so we won't free it twice
-            //FIXME:
+            VLOG_INFO("umem_ring %p", xpacket->umem_ring);
+            ovs_assert(ptr_ring_produce(xpacket->umem_ring, dp_packet_base(packet)) == 0);
+
+            xpacket->umem_ring = NULL;
         }
     }
 
@@ -1999,14 +2006,16 @@ retry:
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
-        umem_elem_push(&xsk->umem->head, elem);
-#ifdef DEBUG
-        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->head,
-                  elem, umem_elem_count(&xsk->umem->head));
-#endif
+        VLOG_INFO("umem_ring %p", &xsk->umem_ring);
+        ovs_assert(ptr_ring_produce(&xsk->umem_ring, elem) == 0);
+//#ifdef DEBUG
+        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem_ring,
+                  elem);
+//#endif
     }
 
     if (total_tx < batch->count) {
+        VLOG_WARN("retry tx");
         goto retry;
     }
     //print_xsk_stat(xsk);

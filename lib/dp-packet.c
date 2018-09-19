@@ -133,11 +133,12 @@ dp_packet_uninit(struct dp_packet *b)
             struct dp_packet_afxdp *xpacket;
 
             xpacket = dp_packet_cast_afxdp(b);
-            if (xpacket->freelist_head)
-                umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
-            
-            VLOG_WARN("%s push back %p %p",
-                      __func__, &xpacket->freelist_head, dp_packet_base(b));
+            if (xpacket->umem_ring) {
+                ptr_ring_produce(xpacket->umem_ring, dp_packet_base(b));
+
+                VLOG_WARN("%s push back %p %p",
+                      __func__, xpacket->umem_ring, dp_packet_base(b));
+            }
             return;
         }
     }
