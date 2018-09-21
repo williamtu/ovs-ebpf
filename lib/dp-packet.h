@@ -84,7 +84,8 @@ struct dp_packet {
 struct dp_packet_afxdp {
     void *next; //point to next elem 
     uint32_t magic;
-    struct umem_elem_head *freelist_head;
+    //struct umem_elem_head *freelist_head;
+    struct umem_pool *mpool;
     struct dp_packet packet;
 };
 
@@ -196,8 +197,8 @@ dp_packet_delete(struct dp_packet *b)
              * push the rx umem back here
              */
             xpacket = dp_packet_cast_afxdp(b);
-            if (xpacket->freelist_head)
-                umem_elem_push(xpacket->freelist_head, dp_packet_base(b));
+            if (xpacket->mpool)
+                umem_elem_push(xpacket->mpool, dp_packet_base(b));
 
             //free(xpacket);
             return;

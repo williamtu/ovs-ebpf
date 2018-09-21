@@ -28,8 +28,12 @@
 #include "util.h"
 #include "ovs-atomic.h"
 #include "xdpsock.h"
+#include "openvswitch/compiler.h"
 
-inline void
+#define ovs_mutex_lock(x)
+#define ovs_mutex_unlock(x)
+#if 0
+void
 umem_elem_push(struct umem_elem_head *head,
                struct umem_elem *elem)
 {
@@ -43,7 +47,7 @@ umem_elem_push(struct umem_elem_head *head,
     ovs_mutex_unlock(&head->mutex);
 }
 
-inline struct umem_elem *
+struct umem_elem *
 umem_elem_pop(struct umem_elem_head *head)
 {
     struct umem_elem *next, *new_head;
@@ -61,10 +65,94 @@ umem_elem_pop(struct umem_elem_head *head)
     return next;
 }
 
-inline unsigned int
+unsigned int
 umem_elem_count(struct umem_elem_head *head)
 {
     return head->n;
 }
 
+#else
+void
+__umem_elem_push_batch(struct umem_pool *umemp, void **addr, int n)
+{
+    void *ptr;
 
+    ptr = (char *)umemp->array + umemp->index * sizeof(void *);
+    memcpy(ptr, addr, n * sizeof(void *));
+    umemp->index += n;
+}
+
+void
+__umem_elem_push(struct umem_pool *umemp, void *addr)
+{
+    umemp->array[umemp->index++] = addr;
+}
+
+void
+umem_elem_push(struct umem_pool *umemp, void *addr)
+{
+
+    if (OVS_UNLIKELY(umemp->index >= umemp->size)) {
+        /* stack is full */
+        OVS_NOT_REACHED();
+    }
+
+    ovs_mutex_lock(&umemp->mutex);
+    __umem_elem_push(umemp, addr);
+    ovs_mutex_unlock(&umemp->mutex);
+}
+
+void *
+__umem_elem_pop(struct umem_pool *umemp)
+{
+    return umemp->array[--umemp->index];
+}
+
+void *
+umem_elem_pop(struct umem_pool *umemp)
+{
+    void *ptr;
+
+    ovs_mutex_lock(&umemp->mutex);
+    ptr = __umem_elem_pop(umemp);
+    ovs_mutex_unlock(&umemp->mutex);
+
+    return ptr;
+}
+
+void **
+__umem_pool_alloc(unsigned int size)
+{
+    void *bufs;
+
+    ovs_assert(posix_memalign(&bufs, getpagesize(),
+                              size * sizeof(void *)) == 0);
+    memset(bufs, 0, size * sizeof(void *));
+    return (void **)bufs;
+}
+
+unsigned int
+umem_elem_count(struct umem_pool *mpool)
+{
+    return mpool->index; 
+}
+
+int
+umem_pool_init(struct umem_pool *umemp, unsigned int size)
+{
+    umemp->array = __umem_pool_alloc(size);
+    if (!umemp->array)
+        OVS_NOT_REACHED();
+
+    umemp->size = size;
+    umemp->index = 0;
+    ovs_mutex_init(&umemp->lock);
+    return 0;
+}
+
+void
+umem_pool_cleanup(struct umem_pool *umemp)
+{
+    free(umemp->array);
+}
+#endif

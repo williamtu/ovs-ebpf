@@ -332,17 +332,15 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
     umem->frames = bufs;
     umem->fd = sfd;
-    umem->head.next = NULL;
-    umem->head.n = 0;
-    ovs_mutex_init(&umem->head.mutex);
+    ovs_assert(!umem_pool_init(&umem->mpool, NUM_FRAMES));
 
     // initialize the umem->frame
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
-        umem_elem_push(&umem->head, elem); 
-        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->head));
+        umem_elem_push(&umem->mpool, elem); 
+        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->mpool));
     }
 
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
@@ -353,8 +351,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         base = (char *)umem->frames + i * FRAME_SIZE;
 #if 1 
         xpacket = (struct dp_packet_afxdp *)base;
-        xpacket->freelist_head = &umem->head;
-        xpacket->magic = 0x201314;
+        xpacket->mpool = &umem->mpool;
 
         packet = &xpacket->packet;
         packet->source = DPBUF_AFXDP;
@@ -364,7 +361,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 //        dp_packet_set_rss_hash(packet, 0x17802c29);
 #endif
     }
-    VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
+//    VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
 
 #if 0
     if (opt_bench == BENCH_TXONLY) {
@@ -401,6 +398,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
     xsk->outstanding_tx = 0;
 
     VLOG_DBG("enter: %s xsk fd %d", __func__, sfd);
+
     if (!umem) {
         shared = false;
         xsk->umem = xdp_umem_configure(sfd);
@@ -433,13 +431,14 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem,
                 == 0);
     }
 */
+
     for (i = 0; i < NUM_DESCS; i++) {
         struct umem_elem *elem;
         uint64_t desc[1]; 
 
-        elem = umem_elem_pop(&xsk->umem->head);
+        elem = umem_elem_pop(&xsk->umem->mpool);
         desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
-        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->head));
+        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->mpool));
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
 
@@ -1508,7 +1507,12 @@ netdev_linux_destruct(struct netdev *netdev_)
 
         get_ifindex(netdev_, &ifindex);
         bpf_set_link_xdp_fd(ifindex, -1, AFXDP_MODE);
+#ifdef HUGETLB
         munmap(netdev->xsk[0]->umem->frames, NUM_FRAMES * FRAME_SIZE);
+#else
+        free(netdev->xsk[0]->umem->frames);
+#endif
+        umem_pool_cleanup(&netdev->xsk[0]->umem->mpool);
         VLOG_INFO("destruct afxdp device");
     }
 
@@ -1805,7 +1809,8 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
 //        VLOG_WARN("rcvd %d base %p xpacket->free_list %p", rcvd, base, xpacket->freelist_head);
         packet = &xpacket->packet;
-        xpacket->freelist_head = &xsk->umem->head; 
+//        xpacket->freelist_head = &xsk->umem->head; 
+        xpacket->mpool = &xsk->umem->mpool;
 
         if (packet->source != DPBUF_AFXDP && packet->source != 0) {
             non_afxdp++;
@@ -1830,7 +1835,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         struct xdp_desc descs[1];
         int retry_cnt = 0;
 retry:
-        elem = umem_elem_pop(&xsk->umem->head);
+        elem = umem_elem_pop(&xsk->umem->mpool);
         if (!elem && retry_cnt < 10) {
             retry_cnt++;
             VLOG_WARN("retry refilling the fill queue");
@@ -1948,8 +1953,8 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         u32 idx = uq->cached_prod++ & uq->mask;
         // FIXME: find available id
         //VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
-        elem = umem_elem_pop(&xsk->umem->head);
-//        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->head));
+        elem = umem_elem_pop(&xsk->umem->mpool);
+//        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->));
 
         if (!elem) {
             VLOG_ERR("no available elem!");
@@ -1968,8 +1973,8 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
             xpacket = dp_packet_cast_afxdp(packet);
 //            VLOG_INFO("TX from umem: head %p push back %p magic %x",
 //                  xpacket->freelist_head, dp_packet_base(packet), xpacket->magic);
-            umem_elem_push(xpacket->freelist_head, dp_packet_base(packet));
-            xpacket->freelist_head = NULL; // so we won't free it twice
+            umem_elem_push(xpacket->mpool, dp_packet_base(packet));
+            xpacket->mpool = NULL; // so we won't free it twice
             //FIXME:
         }
     }
@@ -1999,10 +2004,10 @@ retry:
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
-        umem_elem_push(&xsk->umem->head, elem);
+        umem_elem_push(&xsk->umem->mpool, elem);
 #ifdef DEBUG
-        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->head,
-                  elem, umem_elem_count(&xsk->umem->head));
+        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->mpool,
+                  elem, umem_elem_count(&xsk->umem->mpool));
 #endif
     }
 
