@@ -29,6 +29,7 @@
 #include "ovs-atomic.h"
 #include "xdpsock.h"
 #include "openvswitch/compiler.h"
+#include "dp-packet.h"
 
 #define ovs_mutex_lock(x)
 #define ovs_mutex_unlock(x)
@@ -73,12 +74,16 @@ umem_elem_count(struct umem_elem_head *head)
 
 #else
 void
-__umem_elem_push_batch(struct umem_pool *umemp, void **addr, int n)
+__umem_elem_push_n(struct umem_pool *umemp, void **addrs, int n)
 {
     void *ptr;
 
-    ptr = (char *)umemp->array + umemp->index * sizeof(void *);
-    memcpy(ptr, addr, n * sizeof(void *));
+    if (OVS_UNLIKELY(umemp->index + n > umemp->size)) {
+        OVS_NOT_REACHED();
+    }
+
+    ptr = &umemp->array[umemp->index];
+    memcpy(ptr, addrs, n * sizeof(void *));
     umemp->index += n;
 }
 
@@ -100,6 +105,21 @@ umem_elem_push(struct umem_pool *umemp, void *addr)
     ovs_mutex_lock(&umemp->mutex);
     __umem_elem_push(umemp, addr);
     ovs_mutex_unlock(&umemp->mutex);
+}
+
+void
+__umem_elem_pop_n(struct umem_pool *umemp, void **addrs, int n)
+{
+    void *ptr;
+
+    umemp->index -= n;
+
+    if (OVS_UNLIKELY(umemp->index < 0)) {
+        OVS_NOT_REACHED();
+    }
+
+    ptr = &umemp->array[umemp->index];
+    memcpy(addrs, ptr, n * sizeof(void *));
 }
 
 void *
@@ -155,4 +175,24 @@ umem_pool_cleanup(struct umem_pool *umemp)
 {
     free(umemp->array);
 }
+
+int
+xpacket_pool_init(struct xpacket_pool *xp, unsigned int size)
+{
+    void *bufs;
+
+    ovs_assert(posix_memalign(&bufs, getpagesize(),
+                   size * sizeof(struct dp_packet_afxdp)) == 0);
+
+    xp->array = bufs;
+    xp->size = size;
+    return 0;
+}
+
+void
+xpacket_pool_cleanup(struct xpacket_pool *xp)
+{
+    free(xp->array);
+}
+
 #endif

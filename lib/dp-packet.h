@@ -82,9 +82,6 @@ struct dp_packet {
 };
 
 struct dp_packet_afxdp {
-    void *next; //point to next elem 
-    uint32_t magic;
-    //struct umem_elem_head *freelist_head;
     struct umem_pool *mpool;
     struct dp_packet packet;
 };

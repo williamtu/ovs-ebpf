@@ -28,7 +28,7 @@
 #include "ovs-atomic.h"
 #include "openvswitch/thread.h"
 
-#define FRAME_HEADROOM 1024
+#define FRAME_HEADROOM 256
 #define FRAME_SHIFT 11
 #define FRAME_SIZE 2048
 #define BATCH_SIZE NETDEV_MAX_BURST 
@@ -59,10 +59,16 @@ struct umem_elem {
 
 /* array-based stack */
 struct umem_pool {
-    unsigned int index; /* top */
+    int index; /* top */
     unsigned int size;
     struct ovs_mutex lock;
     void **array;
+};
+
+/* array-based dp_packet */
+struct xpacket_pool {
+    unsigned int size;
+    struct dp_packet_afxdp **array;
 };
 
 struct xdp_umem_uqueue {
@@ -79,6 +85,7 @@ struct xdp_umem_uqueue {
 struct xdp_umem {
     //struct umem_elem_head head; /* a list to keep free frame */
     struct umem_pool mpool; /* a list to keep free frame */
+    struct xpacket_pool xpool;
     char *frames;
     struct xdp_umem_uqueue fq; 
     struct xdp_umem_uqueue cq; 
@@ -98,4 +105,9 @@ void **__umem_pool_alloc(unsigned int size);
 int umem_pool_init(struct umem_pool *umemp, unsigned int size);
 void umem_pool_cleanup(struct umem_pool *umemp);
 unsigned int umem_elem_count(struct umem_pool *mpool);
+void __umem_elem_pop_n(struct umem_pool *umemp, void **addrs, int n);
+void __umem_elem_push_n(struct umem_pool *umemp, void **addrs, int n);
+int xpacket_pool_init(struct xpacket_pool *xp, unsigned int size);
+void xpacket_pool_cleanup(struct xpacket_pool *xp);
+
 #endif

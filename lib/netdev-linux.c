@@ -343,23 +343,29 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->mpool));
     }
 
+    xpacket_pool_init(&umem->xpool, NUM_FRAMES);
+    VLOG_INFO("%s xpacket pool from %p to %p", __func__,
+              umem->xpool.array,
+              (char *)umem->xpool.array + NUM_FRAMES * sizeof(struct dp_packet_afxdp));
+
+    VLOG_INFO("xpacket init done");
+    // initialize the dp_packet array
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
         struct dp_packet_afxdp *xpacket;
         struct dp_packet *packet;
         char *base;
 
-        base = (char *)umem->frames + i * FRAME_SIZE;
-#if 1 
-        xpacket = (struct dp_packet_afxdp *)base;
+        xpacket = (char *)umem->xpool.array + i * sizeof(struct dp_packet_afxdp);
         xpacket->mpool = &umem->mpool;
 
+        VLOG_INFO("xpacket %p", xpacket);
         packet = &xpacket->packet;
         packet->source = DPBUF_AFXDP;
 
-        dp_packet_use(packet, base + FRAME_HEADROOM, 1024);
-
+        base = (char *)umem->frames + i * FRAME_SIZE;
+        dp_packet_use(packet, base, FRAME_SIZE);
+        packet->source = DPBUF_AFXDP;
 //        dp_packet_set_rss_hash(packet, 0x17802c29);
-#endif
     }
 //    VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
 
@@ -1513,6 +1519,7 @@ netdev_linux_destruct(struct netdev *netdev_)
         free(netdev->xsk[0]->umem->frames);
 #endif
         umem_pool_cleanup(&netdev->xsk[0]->umem->mpool);
+        xpacket_pool_cleanup(&netdev->xsk[0]->umem->xpool);
         VLOG_INFO("destruct afxdp device");
     }
 
@@ -1802,14 +1809,18 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         struct dp_packet_afxdp *xpacket;
         struct dp_packet *packet;
         void *base;
+        int index;
 
         base = xq_get_data(xsk, descs[i].addr);
 
         //xpacket = xmalloc(sizeof *xpacket);
-        xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
-//        VLOG_WARN("rcvd %d base %p xpacket->free_list %p", rcvd, base, xpacket->freelist_head);
+        //xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
+
+        index = (descs[i].addr - FRAME_HEADROOM) / FRAME_SIZE;
+
+        xpacket = (char *)xsk->umem->xpool.array + index * sizeof(struct dp_packet_afxdp);
+        VLOG_WARN("rcvd %d base %p xpacket %p index %d", rcvd, base, xpacket, index);
         packet = &xpacket->packet;
-//        xpacket->freelist_head = &xsk->umem->head; 
         xpacket->mpool = &xsk->umem->mpool;
 
         if (packet->source != DPBUF_AFXDP && packet->source != 0) {
@@ -1817,8 +1828,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
             continue;
         }
 
-        dp_packet_use(packet, (char *)base, descs[i].len);
-        packet->source = DPBUF_AFXDP;
+        //packet->source = DPBUF_AFXDP;
 //        dp_packet_set_data(packet, base);
         dp_packet_set_size(packet, descs[i].len);
 
