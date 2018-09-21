@@ -33,7 +33,7 @@
 #define FRAME_SIZE 2048
 #define BATCH_SIZE NETDEV_MAX_BURST 
 
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
 #define NUM_FRAMES 128
 #define NUM_DESCS 64

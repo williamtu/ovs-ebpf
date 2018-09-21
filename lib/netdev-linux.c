@@ -1819,7 +1819,9 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         index = (descs[i].addr - FRAME_HEADROOM) / FRAME_SIZE;
 
         xpacket = (char *)xsk->umem->xpool.array + index * sizeof(struct dp_packet_afxdp);
+#ifdef DEBUG
         VLOG_WARN("rcvd %d base %p xpacket %p index %d", rcvd, base, xpacket, index);
+#endif
         packet = &xpacket->packet;
         xpacket->mpool = &xsk->umem->mpool;
 
