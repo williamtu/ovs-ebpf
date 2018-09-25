@@ -1963,10 +1963,24 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         struct dp_packet_afxdp *xpacket;
 
         u32 idx = uq->cached_prod++ & uq->mask;
+#define AVOID_TXCOPY
+#ifdef AVOID_TXCOPY
+        if (packet->source == DPBUF_AFXDP) {
+            xpacket = dp_packet_cast_afxdp(packet);
+
+            if (xpacket->mpool == &xsk->umem->mpool) {
+                // avoid the copy by resuing the umem_elem
+                r[idx].addr = (uint64_t)((char *)dp_packet_base(packet) - xsk->umem->frames);
+                r[idx].len = dp_packet_size(packet);
+                xpacket->mpool = NULL;
+                continue;
+            }
+        }
+#endif
         // FIXME: find available id
         //VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
         elem = umem_elem_pop(&xsk->umem->mpool);
-//        VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->));
+//      VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->));
 
         if (!elem) {
             VLOG_ERR("no available elem!");
