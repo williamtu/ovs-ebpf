@@ -40,9 +40,11 @@
 /* Program: tail-32 */
 __section_tail(PARSER_CALL)
 static int ovs_parser(struct __sk_buff* skb) {
-    struct ebpf_headers_t *hdrs;
-    struct ebpf_metadata_t metadata = {};
     struct bpf_tunnel_key key;
+    struct bpf_flow_key *flow_key;
+    struct ebpf_headers_t *hdrs;
+    struct ebpf_metadata_t *metadata;
+
     u32 ebpf_zero = 0;
     int err = 0, ret = 0;
 
@@ -51,8 +53,8 @@ static int ovs_parser(struct __sk_buff* skb) {
     printt("skb->ingress_ifindex %d skb->ifindex %d\n",
            skb->ingress_ifindex, skb->ifindex);
 
-    hdrs = bpf_get_headers();
-    if (!hdrs) {
+    flow_key = bpf_get_flow_key();
+    if (!flow_key) {
         printt("XDP does not parse the packet data,"\
                "start full parsing\n");
 
@@ -60,10 +62,13 @@ static int ovs_parser(struct __sk_buff* skb) {
         if (err) {
             return TC_ACT_OK;
         }
-        hdrs = bpf_get_headers();
+        flow_key = bpf_get_flow_key();
     }
-    if (!hdrs) /* need to check again */
+    if (!flow_key) /* need to check again */
         return TC_ACT_OK;
+
+    hdrs = &flow_key->headers;
+    metadata = &flow_key->mds;
 
     /* VLAN 8021Q (0x8100) or 8021AD (0x88a8) in metadata
      * note: vlan in metadata is always the outer vlan
@@ -77,48 +82,48 @@ static int ovs_parser(struct __sk_buff* skb) {
                bpf_ntohs(skb->vlan_proto), skb->vlan_tci);
     }
 
-    metadata.md.skb_priority = skb->priority;
+    metadata->md.skb_priority = skb->priority;
 
     /* Don't use ovs_cb_get_ifindex(), that gets optimized into something
      * that can't be verified. >:( */
     if (skb->cb[OVS_CB_INGRESS]) {
-        metadata.md.in_port = skb->ingress_ifindex;
+        metadata->md.in_port = skb->ingress_ifindex;
     }
     if (!skb->cb[OVS_CB_INGRESS]) {
-        metadata.md.in_port = skb->ifindex;
+        metadata->md.in_port = skb->ifindex;
     }
-    metadata.md.pkt_mark = skb->mark;
+    metadata->md.pkt_mark = skb->mark;
 
     ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key), 0);
     if (!ret) {
         printt("bpf_skb_get_tunnel_key id = %d ipv4\n", key.tunnel_id);
-        metadata.tnl_md.tun_id = key.tunnel_id;
-        metadata.tnl_md.ip4.ip_src = key.remote_ipv4;
-        metadata.tnl_md.ip_tos = key.tunnel_tos;
-        metadata.tnl_md.ip_ttl = key.tunnel_ttl;
-        metadata.tnl_md.use_ipv6 = 0;
-        metadata.tnl_md.flags = 0;
+        metadata->tnl_md.tun_id = key.tunnel_id;
+        metadata->tnl_md.ip4.ip_src = key.remote_ipv4;
+        metadata->tnl_md.ip_tos = key.tunnel_tos;
+        metadata->tnl_md.ip_ttl = key.tunnel_ttl;
+        metadata->tnl_md.use_ipv6 = 0;
+        metadata->tnl_md.flags = 0;
 #ifdef BPF_ENABLE_IPV6
     } else if (ret == -EPROTO) {
         ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key),
                                      BPF_F_TUNINFO_IPV6);
         if (!ret) {
             printt("bpf_skb_get_tunnel_key id = %d ipv6\n", key.tunnel_id);
-            metadata.tnl_md.tun_id = key.tunnel_id;
-            memcpy(&metadata.tnl_md.ip6.ipv6_src, &key.remote_ipv4, 16);
-            metadata.tnl_md.ip_tos = key.tunnel_tos;
-            metadata.tnl_md.ip_ttl = key.tunnel_ttl;
-            metadata.tnl_md.use_ipv6 = 1;
-            metadata.tnl_md.flags = 0;
+            metadata->tnl_md.tun_id = key.tunnel_id;
+            memcpy(&metadata->tnl_md.ip6.ipv6_src, &key.remote_ipv4, 16);
+            metadata->tnl_md.ip_tos = key.tunnel_tos;
+            metadata->tnl_md.ip_ttl = key.tunnel_ttl;
+            metadata->tnl_md.use_ipv6 = 1;
+            metadata->tnl_md.flags = 0;
         }
 #endif
     }
 
     if (!ret) {
-        ret = bpf_skb_get_tunnel_opt(skb, &metadata.tnl_md.gnvopt,
-                                     sizeof metadata.tnl_md.gnvopt);
+        ret = bpf_skb_get_tunnel_opt(skb, &metadata->tnl_md.gnvopt,
+                                     sizeof metadata->tnl_md.gnvopt);
         if (ret > 0)
-            metadata.tnl_md.gnvopt_valid = 1;
+            metadata->tnl_md.gnvopt_valid = 1;
         printt("bpf_skb_get_tunnel_opt ret = %d\n", ret);
     }
 
@@ -129,8 +134,8 @@ static int ovs_parser(struct __sk_buff* skb) {
 
     /* write flow key and md to key map */
     if (ovs_cb_is_initial_parse(skb)) {
-        bpf_map_update_elem(&percpu_metadata,
-                            &ebpf_zero, &metadata, BPF_ANY);
+        bpf_map_update_elem(&percpu_flow_key,
+                            &ebpf_zero, flow_key, BPF_ANY);
     }
     skb->cb[OVS_CB_ACT_IDX] = 0;
 

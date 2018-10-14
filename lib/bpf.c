@@ -199,6 +199,7 @@ bpf_get(struct bpf_state *state, bool verbose)
         {&state->flow_table.fd, "flow_table"},
         {&state->datapath_stats.fd, "datapath_stats"},
         {&state->tailcalls.fd, "tailcalls"},
+        {&state->downcall_metadata.fd, "downcall_metadata"},
         {&state->execute_actions.fd, "execute_actions"},
         {&state->dp_flow_stats.fd, "dp_flow_stats"},
     };

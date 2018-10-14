@@ -60,20 +60,12 @@ enum {
 };
 
 /* A bpf flow key is extracted from the
- * parser.h and saved in
- *  1) percpu_headers, and
- *  2) percpu_metadata
+ * parser.h and saved in percpu_flow_key.
  * Access: BPF is the only writer/reader
  */
-BPF_PERCPU_ARRAY(percpu_headers,
+BPF_PERCPU_ARRAY(percpu_flow_key,
         0,
-        sizeof(struct ebpf_headers_t),
-        0,
-        1
-);
-BPF_PERCPU_ARRAY(percpu_metadata,
-        0,
-        sizeof(struct ebpf_metadata_t),
+        sizeof(struct bpf_flow_key),
         0,
         1
 );
@@ -131,6 +123,17 @@ BPF_PROG_ARRAY(tailcalls,
         64
 );
 
+/* A dedicated metadata field for downcall packet.
+ * Access: ovs-vswitchd is the writer,
+ *         BPF is the reader
+ */
+BPF_ARRAY(downcall_metadata,
+        0,
+        sizeof(struct bpf_downcall),
+        0,
+        1
+);
+
 /* A dedicated action list for downcall packet.
  * Access: ovs-vswitchd is the writer,
  *         BPF is the reader
@@ -153,19 +156,12 @@ BPF_PERCPU_ARRAY(percpu_executing_key,
         1
 );
 
-struct ebpf_headers_t;
-struct ebpf_metadata_t;
+struct bpf_flow_key;
 
-static inline struct ebpf_headers_t *bpf_get_headers()
+static inline struct bpf_flow_key *bpf_get_flow_key()
 {
     int ebpf_zero = 0;
-    return bpf_map_lookup_elem(&percpu_headers, &ebpf_zero);
-}
-
-static inline struct ebpf_metadata_t *bpf_get_mds()
-{
-    int ebpf_zero = 0;
-    return bpf_map_lookup_elem(&percpu_metadata, &ebpf_zero);
+    return bpf_map_lookup_elem(&percpu_flow_key, &ebpf_zero);
 }
 
 #endif /* BPFMAP_OPENVSWITCH_H */

@@ -159,38 +159,25 @@ flow_stats_account(struct ebpf_headers_t *headers,
 }
 
 static inline struct bpf_action_batch *
-ovs_lookup_flow(struct ebpf_headers_t *headers,
-                struct ebpf_metadata_t *mds)
+ovs_lookup_flow(struct bpf_flow_key *flow_key)
 {
-    struct bpf_flow_key flow_key;
-
-    flow_key.headers = *headers;
-    flow_key.mds = *mds;
-
-    return bpf_map_lookup_elem(&flow_table, &flow_key);
+    return bpf_map_lookup_elem(&flow_table, flow_key);
 }
 
 __section_tail(MATCH_ACTION_CALL)
 static int lookup(struct __sk_buff* skb OVS_UNUSED)
 {
     struct bpf_action_batch *action_batch;
-    struct ebpf_headers_t *headers;
-    struct ebpf_metadata_t *mds;
+    struct bpf_flow_key *flow_key;
 
-    headers = bpf_get_headers();
-    if (!headers) {
-        printt("no packet header found\n");
-        ERR_EXIT();
-    }
-
-    mds = bpf_get_mds();
-    if (!mds) {
-        printt("no packet metadata found\n");
+    flow_key = bpf_get_flow_key();
+    if (!flow_key) {
+        printt("no flow key found\n");
         ERR_EXIT();
     }
 
     /* LOOKUP */
-    action_batch = ovs_lookup_flow(headers, mds);
+    action_batch = ovs_lookup_flow(flow_key);
     if (!action_batch) {
         printt("no action found, upcall to userspace\n");
         bpf_tail_call(skb, &tailcalls, UPCALL_CALL);
@@ -202,16 +189,12 @@ static int lookup(struct __sk_buff* skb OVS_UNUSED)
         /* DP Stats Update */
         stats_account(OVS_DP_STATS_HIT);
         /* Flow Stats Update */
-        flow_stats_account(headers, mds, skb->len);
+        flow_stats_account(&flow_key->headers, &flow_key->mds, skb->len);
     }
 
-    /* Hit verifier limit when moving declaration up. */
-    struct bpf_flow_key flow_key;
-    flow_key.headers = *headers;
-    flow_key.mds = *mds;
     int index = 0;
     int error = bpf_map_update_elem(&percpu_executing_key, &index,
-                                    &flow_key, BPF_ANY);
+                                    flow_key, BPF_ANY);
     if (error) {
         printt("update percpu_executing_key failed: %d\n", error);
         return TC_ACT_OK;

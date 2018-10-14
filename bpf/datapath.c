@@ -72,8 +72,9 @@ static inline int process_upcall(struct __sk_buff *skb)
         //.ifindex = ovs_cb_get_ifindex(skb),
     };
     int stat, err;
-    struct ebpf_headers_t *hdrs = bpf_get_headers();
-    struct ebpf_metadata_t *mds = bpf_get_mds();
+    struct bpf_flow_key *flow_key = bpf_get_flow_key();
+    struct ebpf_headers_t *hdrs = &flow_key->headers;
+    struct ebpf_metadata_t *mds = &flow_key->mds;
 
     if (!hdrs || !mds) {
         printt("headers/mds is NULL\n");
@@ -146,22 +147,24 @@ static int from_stack(struct __sk_buff *skb)
 __section("downcall")
 static int execute(struct __sk_buff *skb)
 {
-    struct bpf_downcall md;
+    struct bpf_flow_key flow_key = {};
+    struct bpf_downcall *md;
     u32 ebpf_zero = 0;
-    int flags, ofs;
+    int flags;
 
-    ofs = skb->len - sizeof(md);
-    skb_load_bytes(skb, ofs, &md, sizeof(md));
-    flags = md.flags & OVS_BPF_FLAGS_TX_STACK ? BPF_F_INGRESS : 0;
+    md = bpf_map_lookup_elem(&downcall_metadata, &ebpf_zero);
+    if (!md) {
+        printt("Failed to get downcall metadata\n");
+        return TC_ACT_SHOT;
+    }
 
-    printt("downcall (%d) from %d flags %d\n", md.type,
-           md.ifindex, flags);
+    flags = md->flags & OVS_BPF_FLAGS_TX_STACK ? BPF_F_INGRESS : 0;
+    printt("downcall (%d) from %d flags %d\n", md->type, md->ifindex, flags);
 
-    bpf_map_update_elem(&percpu_metadata, &ebpf_zero, &md.md, BPF_ANY);
+    flow_key.mds = md->md;
+    bpf_map_update_elem(&percpu_flow_key, &ebpf_zero, &flow_key, BPF_ANY);
 
-    skb_change_tail(skb, ofs, 0);
-
-    switch (md.type) {
+    switch (md->type) {
     case OVS_BPF_DOWNCALL_EXECUTE: {
         struct bpf_action_batch *action_batch;
 
@@ -180,10 +183,10 @@ static int execute(struct __sk_buff *skb)
         skb->cb[OVS_CB_ACT_IDX] = -1;
         /* Redirect to the device this packet came from, so it's as though the
          * packet was freshly received. This should execute PARSER_CALL. */
-        return redirect(md.ifindex, flags);
+        return redirect(md->ifindex, flags);
     }
     default:
-        printt("Unknown downcall type %d\n", md.type);
+        printt("Unknown downcall type %d\n", md->type);
         break;
     }
     return 0;

@@ -1257,6 +1257,7 @@ dpif_bpf_downcall(struct dpif *dpif_, struct dp_packet *packet,
     struct dp_packet *clone_pkt;
 
     ovs_assert(datapath.bpf.execute_actions.fd != -1);
+    ovs_assert(datapath.bpf.downcall_metadata.fd != -1);
 
     bpf_metadata_from_flow(flow, &md.md);
 
@@ -1285,7 +1286,14 @@ dpif_bpf_downcall(struct dpif *dpif_, struct dp_packet *packet,
     }
 
     /* XXX: Check that ovs-system device MTU is large enough to include md. */
-    dp_packet_put(packet, &md, sizeof md);
+    int zero_index = 0;
+    error = bpf_map_update_elem(datapath.bpf.downcall_metadata.fd,
+                                &zero_index, &md, 0);
+    if (error) {
+        VLOG_ERR("%s: map update failed", __func__);
+        return error;
+    }
+
     clone_pkt = dp_packet_clone(packet);
     dp_packet_batch_init_packet(&batch, clone_pkt);
 

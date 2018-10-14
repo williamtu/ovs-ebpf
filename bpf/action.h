@@ -282,13 +282,13 @@ static int tail_action_userspace(struct __sk_buff *skb)
     memcpy(md.uactions, action->u.userspace.nlattr_data, sizeof(md.uactions));
     md.uactions_len = action->u.userspace.nlattr_len;
 
-    struct ebpf_headers_t *hdrs = bpf_get_headers();
-    if (!hdrs) {
-        printt("headers is NULL\n");
+    struct bpf_flow_key *flow_key = bpf_get_flow_key();
+    if (!flow_key) {
+        printt("flow key is NULL\n");
         return TC_ACT_SHOT;
     }
 
-    memcpy(&md.key.headers, hdrs, sizeof(*hdrs));
+    memcpy(&md.key.headers, &flow_key->headers, sizeof(flow_key->headers));
 
     uint64_t flags = skb->len;
     flags <<= 32;
@@ -467,6 +467,7 @@ static int tail_action_recirc(struct __sk_buff *skb)
 {
     u32 recirc_id = 0;
     struct bpf_action *action;
+    struct bpf_flow_key *flow_key;
     struct bpf_action_batch *batch ;
     struct ebpf_metadata_t *ebpf_md;
 
@@ -484,11 +485,12 @@ static int tail_action_recirc(struct __sk_buff *skb)
     printt("recirc id = %d\n", recirc_id);
 
     /* update metadata */
-    ebpf_md = bpf_get_mds();
-    if (!ebpf_md) {
-        printt("lookup metadata failed\n");
+    flow_key = bpf_get_flow_key();
+    if (!flow_key) {
+        printt("lookup metadata from flow_key failed\n");
         return TC_ACT_SHOT;
     }
+    ebpf_md = &flow_key->mds;
     ebpf_md->md.recirc_id = recirc_id;
 
     skb->cb[OVS_CB_ACT_IDX] = 0;
@@ -507,10 +509,10 @@ __section_tail(OVS_ACTION_ATTR_HASH)
 static int tail_action_hash(struct __sk_buff *skb)
 {
     u32 hash = 0;
-    int index = 0;
     struct ebpf_metadata_t *ebpf_md;
     struct bpf_action *action;
     struct bpf_action_batch *batch;
+    struct bpf_flow_key *flow_key;
 
     action = pre_tail_action(skb, &batch);
     if (!action)
@@ -522,11 +524,12 @@ static int tail_action_hash(struct __sk_buff *skb)
     if (!hash)
         hash = 0x1;
 
-    ebpf_md = bpf_map_lookup_elem(&percpu_metadata, &index);
-    if (!ebpf_md) {
-        printt("LOOKUP metadata failed\n");
+    flow_key = bpf_get_flow_key();
+    if (!flow_key) {
+        printt("Lookup metadata from flow key failed\n");
         return TC_ACT_SHOT;
     }
+    ebpf_md = &flow_key->mds;
     printt("save hash to ebpf_md->md.dp_hash\n");
     ebpf_md->md.dp_hash = hash; /* or create a ovs_flow_hash?*/
 

@@ -50,7 +50,8 @@ enum ErrorCode {
 static inline int
 PARSE_DATA(struct OVS_SK_BUFF *skb)
 {
-    struct ebpf_headers_t hdrs = {};
+    struct bpf_flow_key flow_key = {};
+    struct ebpf_headers_t *hdrs = &flow_key.headers;
     ovs_be16 eth_proto;
     u32 ebpf_zero = 0;
     int offset = 0;
@@ -58,20 +59,21 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
     int err = 0;
 
     /* Link Layer. */
-    if (OVS_LOAD_BYTES(skb, offset, &hdrs.ethernet, sizeof(hdrs.ethernet)) < 0) {
+    if (OVS_LOAD_BYTES(skb, offset, &hdrs->ethernet,
+                       sizeof(hdrs->ethernet)) < 0) {
         err = ovs_header_too_short;
         printt("ERR: load byte %d\n", __LINE__);
         goto end;
     }
-    if (hdrs.ethernet.etherType == 0) {
+    if (hdrs->ethernet.etherType == 0) {
         printt("Layer 3 packet with eth_proto == 0, return TC_ACT_OK\n");
         return TC_ACT_OK;
     }
 
-    offset += sizeof(hdrs.ethernet);
-    hdrs.valid |= ETHER_VALID;
+    offset += sizeof(hdrs->ethernet);
+    hdrs->valid |= ETHER_VALID;
 
-    eth_proto = hdrs.ethernet.etherType;
+    eth_proto = hdrs->ethernet.etherType;
 
     if (eth_proto == bpf_htons(ETH_P_8021Q)){
 
@@ -89,14 +91,14 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        offset += sizeof(hdrs.cvlan);
-        hdrs.valid |= CVLAN_VALID;
+        offset += sizeof(hdrs->cvlan);
+        hdrs->valid |= CVLAN_VALID;
 
-        hdrs.cvlan.tci = bpf_ntohs(cvlan.tci);
-        hdrs.cvlan.etherType = cvlan.ethertype;
+        hdrs->cvlan.tci = bpf_ntohs(cvlan.tci);
+        hdrs->cvlan.etherType = cvlan.ethertype;
 
         printt("vlan tci 0x%x ethertype 0x%x\n",
-               hdrs.cvlan.tci, bpf_ntohs(hdrs.cvlan.etherType));
+               hdrs->cvlan.tci, bpf_ntohs(hdrs->cvlan.etherType));
 
         OVS_LOAD_BYTES(skb, offset - 2, &eth_proto, 2);
         printt("eth_proto = 0x%x\n", bpf_ntohs(eth_proto));
@@ -114,15 +116,15 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             goto end;
         }
         offset += nh.ihl * 4;
-        hdrs.valid |= IPV4_VALID;
+        hdrs->valid |= IPV4_VALID;
 
-        hdrs.ipv4.ttl = nh.ttl;                /* u8 */
-        hdrs.ipv4.tos = nh.tos;                /* u8 */
-        hdrs.ipv4.protocol = nh.protocol;     /* u8*/
-        hdrs.ipv4.srcAddr = nh.saddr;        /* be32 */
-        hdrs.ipv4.dstAddr = nh.daddr;        /* be32 */
+        hdrs->ipv4.ttl = nh.ttl;                /* u8 */
+        hdrs->ipv4.tos = nh.tos;                /* u8 */
+        hdrs->ipv4.protocol = nh.protocol;     /* u8*/
+        hdrs->ipv4.srcAddr = nh.saddr;        /* be32 */
+        hdrs->ipv4.dstAddr = nh.daddr;        /* be32 */
 
-        nw_proto = hdrs.ipv4.protocol;
+        nw_proto = hdrs->ipv4.protocol;
         printt("next proto 0x%x\n", nw_proto);
 
     } else if (eth_proto == bpf_htons(ETH_P_ARP) ||
@@ -132,14 +134,14 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
         printt("parse arp/rarp\n");
 
         /* the struct arp_rarp_t is wired format */
-        arp = &hdrs.arp;
-        if (OVS_LOAD_BYTES(skb, offset, arp, sizeof(hdrs.arp)) < 0) {
+        arp = &hdrs->arp;
+        if (OVS_LOAD_BYTES(skb, offset, arp, sizeof(hdrs->arp)) < 0) {
             err = ovs_header_too_short;
             printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        offset += sizeof(hdrs.arp);
-        hdrs.valid |= ARP_VALID;
+        offset += sizeof(hdrs->arp);
+        hdrs->valid |= ARP_VALID;
 
         if (arp->ar_hrd == bpf_htons(ARPHRD_ETHER) &&
             arp->ar_pro == bpf_htons(ETH_P_IP) &&
@@ -161,13 +163,13 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             goto end;
         }
         offset += sizeof(struct ipv6hdr); /* wired format */
-        hdrs.valid |= IPV6_VALID;
+        hdrs->valid |= IPV6_VALID;
 
         printt("parse ipv6\n");
 
-        memcpy(&hdrs.ipv6.flowLabel, &ip6hdr.flow_lbl, 4); //FIXME
-        memcpy(&hdrs.ipv6.srcAddr, &ip6hdr.saddr, 16);
-        memcpy(&hdrs.ipv6.dstAddr, &ip6hdr.daddr, 16);
+        memcpy(&hdrs->ipv6.flowLabel, &ip6hdr.flow_lbl, 4); //FIXME
+        memcpy(&hdrs->ipv6.srcAddr, &ip6hdr.saddr, 16);
+        memcpy(&hdrs->ipv6.dstAddr, &ip6hdr.daddr, 16);
 
         nw_proto = ip6hdr.nexthdr;
 
@@ -197,11 +199,11 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        hdrs.valid |= TCP_VALID;
+        hdrs->valid |= TCP_VALID;
 
-        hdrs.tcp.srcPort = tcp.source;
-        hdrs.tcp.dstPort = tcp.dest;
-        hdrs.tcp.flags = TCP_FLAGS_BE16(&tcp);
+        hdrs->tcp.srcPort = tcp.source;
+        hdrs->tcp.dstPort = tcp.dest;
+        hdrs->tcp.flags = TCP_FLAGS_BE16(&tcp);
 
         printt("parse tcp src %d dst %d\n", bpf_ntohs(tcp.source), bpf_ntohs(tcp.dest));
 
@@ -213,10 +215,10 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        hdrs.valid |= UDP_VALID;
+        hdrs->valid |= UDP_VALID;
 
-        hdrs.udp.srcPort = udp.source;
-        hdrs.udp.dstPort = udp.dest;
+        hdrs->udp.srcPort = udp.source;
+        hdrs->udp.dstPort = udp.dest;
 
         printt("parse udp src %d dst %d\n", bpf_ntohs(udp.source), bpf_ntohs(udp.dest));
 
@@ -228,10 +230,10 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        hdrs.valid |= ICMP_VALID;
+        hdrs->valid |= ICMP_VALID;
 
-        hdrs.icmp.type = icmp.type;
-        hdrs.icmp.code = icmp.code;
+        hdrs->icmp.type = icmp.type;
+        hdrs->icmp.code = icmp.code;
 
         printt("parse icmp type %d code %d\n", icmp.type, icmp.code);
 
@@ -243,10 +245,10 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
             printt("ERR: load byte %d\n", __LINE__);
             goto end;
         }
-        hdrs.valid |= ICMPV6_VALID;
+        hdrs->valid |= ICMPV6_VALID;
 
-        hdrs.icmpv6.type = icmp.type;
-        hdrs.icmpv6.code = icmp.code;
+        hdrs->icmpv6.type = icmp.type;
+        hdrs->icmpv6.code = icmp.code;
 
         printt("parse icmp v6 type %d code %d\n", icmp.type, icmp.code);
     } else if (nw_proto == IPPROTO_GRE) {
@@ -258,8 +260,8 @@ PARSE_DATA(struct OVS_SK_BUFF *skb)
 
     /* write flow key and md to key map */
     printt("Parser: updating flow key\n");
-    bpf_map_update_elem(&percpu_headers,
-                        &ebpf_zero, &hdrs, BPF_ANY);
+    bpf_map_update_elem(&percpu_flow_key,
+                        &ebpf_zero, &flow_key, BPF_ANY);
 end:
     return 0;
 }
