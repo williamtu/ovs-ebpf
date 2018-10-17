@@ -97,7 +97,8 @@ struct bpf_flow_stats {
 struct bpf_flow_key {
     struct ebpf_headers_t headers;
     struct ebpf_metadata_t mds;
-};
+} __attribute__((aligned(sizeof(long))));
+/* Ensure that we can do comparisons as longs. */
 
 struct bpf_upcall {
     uint8_t type;

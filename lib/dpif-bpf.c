@@ -1864,16 +1864,9 @@ bpf_debug_print(int subtype, int error)
 }
 
 static int
-recv_perf_sample(struct dpif_bpf_dp *dpif, struct ovs_ebpf_event *e,
-                 struct dpif_upcall *upcall, struct ofpbuf *buffer)
+recv_perf_sample__(struct dpif_bpf_dp *dpif, struct ovs_ebpf_event *e,
+                   struct dpif_upcall *upcall, struct ofpbuf *buffer)
 {
-    if (e->sample.header.size < sizeof *e
-        || e->sample.size < sizeof e->header) {
-        VLOG_WARN_RL(&rl, "Unexpectedly short sample (%"PRIu32")",
-                     e->sample.size);
-        return EINVAL;
-    }
-
     VLOG_INFO("\nreceived upcall %d", e->header.type);
 
     switch (e->header.type) {
@@ -1892,6 +1885,38 @@ recv_perf_sample(struct dpif_bpf_dp *dpif, struct ovs_ebpf_event *e,
 
     VLOG_WARN_RL(&rl, "Unfamiliar upcall type %d", e->header.type);
     return EINVAL;
+}
+
+static int
+recv_perf_sample(struct dpif_bpf_dp *dpif, struct ovs_ebpf_event *e,
+                 struct dpif_upcall *upcall, struct ofpbuf *buffer)
+{
+    /* Insert padding into buffer, it is because in userspace
+     * struct bpf_upcall in struct ovs_ebpf_event is long aligned due to
+     * struct bpf_flow_key. However, struct bpf_upcall is packed after
+     * struct perf_event_raw when the kernel helper is generating the perf
+     * sample. We need to add padding so that we can read struct ovs_ebpf_event
+     * from buffer at once. */
+    size_t header_offset = offsetof(struct ovs_ebpf_event, header);
+    size_t padding_size = header_offset - sizeof e->sample;
+
+    if (e->sample.header.size < (sizeof *e - padding_size)
+        || e->sample.size < sizeof e->header) {
+        VLOG_WARN_RL(&rl, "Unexpectedly short sample (%"PRIu32")",
+                     e->sample.size);
+        return EINVAL;
+    }
+
+    if (padding_size) {
+        uint8_t padding[sizeof(long)];
+        struct ofpbuf padding_buf;
+
+        ofpbuf_use_stack(&padding_buf, padding, sizeof(long));
+        ofpbuf_insert(buffer, header_offset - padding_size, padding_buf.data,
+                      padding_size);
+    }
+
+    return recv_perf_sample__(dpif, e, upcall, buffer);
 }
 
 static int
