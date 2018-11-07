@@ -23,12 +23,8 @@
 /* eBPF executes actions by tailcall because eBPF doesn't support for-loop and
  * unroll produces oversized code.
  *
- * Each action handler uses current packet's key to look for the next action.
- * However, the key can be changed by some actions like hash, so a stable
- * key is kept in an eBPF map named percpu_executing_key. In action handler,
- * firstly, the stable key is got from percpu_executing_key, then it is used
- * to look up the actions being executed. skb->cb[OVS_CB_ACT_IDX] points to
- * next action.
+ * After flow lookup or downcall, actions are kept in the percpu_action_batch.
+ * skb->cb[OVS_CB_ACT_IDX] is an index that points to the next action.
  */
 static inline void ovs_execute_actions(struct __sk_buff *skb,
                                        struct bpf_action *action)
@@ -192,11 +188,12 @@ static int lookup(struct __sk_buff* skb OVS_UNUSED)
         flow_stats_account(&flow_key->headers, &flow_key->mds, skb->len);
     }
 
+    /* Set action batch to percpu map. */
     int index = 0;
-    int error = bpf_map_update_elem(&percpu_executing_key, &index,
-                                    flow_key, BPF_ANY);
+    int error = bpf_map_update_elem(&percpu_action_batch, &index,
+                                    action_batch, BPF_ANY);
     if (error) {
-        printt("update percpu_executing_key failed: %d\n", error);
+        printt("update percpu_action_batch failed: %d\n", error);
         return TC_ACT_OK;
     }
 

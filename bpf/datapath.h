@@ -23,7 +23,6 @@
 enum ovs_cb_idx {
     OVS_CB_ACT_IDX,         /* Next action to process in action batch. */
     OVS_CB_INGRESS,         /* 0 = egress; nonzero = ingress. */
-    OVS_CB_DOWNCALL_EXE,    /* 0 = match/execute, 1 = downcall/execute. */
 };
 
 static void

@@ -171,7 +171,12 @@ static int execute(struct __sk_buff *skb)
         action_batch = bpf_map_lookup_elem(&execute_actions, &ebpf_zero);
         if (action_batch) {
             printt("get valid action_batch\n");
-            skb->cb[OVS_CB_DOWNCALL_EXE] = 1;
+            int err = bpf_map_update_elem(&percpu_action_batch, &ebpf_zero,
+                                          action_batch, BPF_ANY);
+            if (err) {
+                printt("update percpu_action_batch failed at donwcall: %d\n",
+                        err);
+            }
             bpf_tail_call(skb, &tailcalls, action_batch->actions[0].type);
         } else {
             printt("get null action_batch\n");

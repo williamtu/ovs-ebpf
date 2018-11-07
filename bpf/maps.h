@@ -145,13 +145,13 @@ BPF_ARRAY(execute_actions,
         1
 );
 
-/* A dedicated key for downcall packet.
- * Access: ovs-vswitchd is the writer,
- *         BPF is the reader
+/* A dedicated action list after flow table lookup.
+ * Access: BPF is the reader and writer.
+ * Write in flow lookup or downcall, read in action execution.
  */
-BPF_PERCPU_ARRAY(percpu_executing_key,
+BPF_PERCPU_ARRAY(percpu_action_batch,
         0,
-        sizeof(struct bpf_flow_key),
+        sizeof(struct bpf_action_batch),
         0,
         1
 );
@@ -162,6 +162,12 @@ static inline struct bpf_flow_key *bpf_get_flow_key()
 {
     int ebpf_zero = 0;
     return bpf_map_lookup_elem(&percpu_flow_key, &ebpf_zero);
+}
+
+static inline struct bpf_action_batch *bpf_get_action_batch()
+{
+    int ebpf_zero = 0;
+    return bpf_map_lookup_elem(&percpu_action_batch, &ebpf_zero);
 }
 
 #endif /* BPFMAP_OPENVSWITCH_H */

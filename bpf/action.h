@@ -126,37 +126,14 @@ static inline struct bpf_action *pre_tail_action(struct __sk_buff *skb,
     uint32_t index = ovs_cb_get_action_index(skb);
     struct bpf_action *action = NULL;
     struct bpf_action_batch *batch;
-    int zero_index = 0;
 
     if (index >= BPF_DP_MAX_ACTION) {
         printt("ERR max ebpf action hit\n");
         return NULL;
     }
 
-    if (skb->cb[OVS_CB_DOWNCALL_EXE]) {
-        /* Downcall packet has a dedicated action list */
-        batch = bpf_map_lookup_elem(&execute_actions, &zero_index);
-    } else {
-        struct bpf_flow_key *exe_flow_key;
+    batch = bpf_get_action_batch();
 
-        exe_flow_key = bpf_map_lookup_elem(&percpu_executing_key,
-                                           &zero_index);
-        if (!exe_flow_key) {
-            printt("empty percpu_executing_key\n");
-            return NULL;
-        }
-
-#if ENABLE_POINTER_LOOKUP
-        /*
-         * kernel 4.18-rc1, commit:
-         * bpf: allow map helpers access to map values directly
-         */
-        batch = bpf_map_lookup_elem(&flow_table, exe_flow_key);
-#else
-        struct bpf_flow_key flow_key = *exe_flow_key;
-        batch = bpf_map_lookup_elem(&flow_table, &flow_key);
-#endif
-    }
     if (!batch) {
         printt("no batch action found\n");
         return NULL;
@@ -196,10 +173,6 @@ static inline int post_tail_action(struct __sk_buff *skb,
     return TC_ACT_SHOT;
 
 finish:
-    if (skb->cb[OVS_CB_DOWNCALL_EXE]) {
-        int index = 0;
-        bpf_map_delete_elem(&execute_actions, &index);
-    }
     return TC_ACT_STOLEN;
 }
 
@@ -494,7 +467,6 @@ static int tail_action_recirc(struct __sk_buff *skb)
     ebpf_md->md.recirc_id = recirc_id;
 
     skb->cb[OVS_CB_ACT_IDX] = 0;
-    skb->cb[OVS_CB_DOWNCALL_EXE] = 0;
 
     /* FIXME: recirc should not call this. */
     bpf_tail_call(skb, &tailcalls, MATCH_ACTION_CALL);
