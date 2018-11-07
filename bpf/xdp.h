@@ -24,7 +24,6 @@ static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
     /* TODO: see p4c-xdp project */
 #ifdef BPF_ENABLE_IPV6
 	printt("return XDP_PASS\n");
-    return XDP_PASS;
 #else
     /* Early drop ipv6 */
 	void *data_end = (void *)(long)ctx->data_end;
@@ -42,6 +41,7 @@ static int xdp_ingress(struct xdp_md *ctx OVS_UNUSED)
 		return XDP_DROP;
 	}
 #endif
+    return XDP_PASS;
 }
 
 __section("af_xdp")
