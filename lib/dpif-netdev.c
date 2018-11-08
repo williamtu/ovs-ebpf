@@ -1158,8 +1158,8 @@ dpif_netdev_init(void)
 		if (error) {
 			VLOG_ERR("%s: Load BPF datapath failed", __func__);
 		}
+        ovsthread_once_done(&once);
 	}
-	ovsthread_once_done(&once);
 
     return 0;
 }
