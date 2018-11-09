@@ -87,6 +87,7 @@ EXTRA_DIST = \
 	Vagrantfile \
 	Vagrantfile-FreeBSD \
 	Vagrantfile-eBPF \
+	afxdp.sh \
 	.mailmap
 bin_PROGRAMS =
 sbin_PROGRAMS =
