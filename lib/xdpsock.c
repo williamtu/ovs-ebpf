@@ -87,7 +87,7 @@ __umem_elem_push_n(struct umem_pool *umemp, void **addrs, int n)
     umemp->index += n;
 }
 
-void
+inline void
 __umem_elem_push(struct umem_pool *umemp, void *addr)
 {
     umemp->array[umemp->index++] = addr;
@@ -122,7 +122,7 @@ __umem_elem_pop_n(struct umem_pool *umemp, void **addrs, int n)
     memcpy(addrs, ptr, n * sizeof(void *));
 }
 
-void *
+inline void *
 __umem_elem_pop(struct umem_pool *umemp)
 {
     return umemp->array[--umemp->index];

@@ -42,9 +42,9 @@
 #else
 //#define NUM_FRAMES 131072
 #define NUM_FRAMES 10240
-#define NUM_DESCS 1024
-#define FQ_NUM_DESCS 1024
-#define CQ_NUM_DESCS 1024
+#define NUM_DESCS 256
+#define FQ_NUM_DESCS 256
+#define CQ_NUM_DESCS 256 
 #endif
 
 struct umem_elem_head {
