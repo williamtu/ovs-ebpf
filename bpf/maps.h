@@ -132,7 +132,7 @@ BPF_PROG_ARRAY(tailcalls,
 );
 
 /* A dedicated action list for downcall packet.
- * Access: ovs-vswitch is the writer,
+ * Access: ovs-vswitchd is the writer,
  *         BPF is the reader
  */
 BPF_ARRAY(execute_actions,
@@ -143,7 +143,7 @@ BPF_ARRAY(execute_actions,
 );
 
 /* A dedicated key for downcall packet.
- * Access: ovs-vswitch is the writer,
+ * Access: ovs-vswitchd is the writer,
  *         BPF is the reader
  */
 BPF_PERCPU_ARRAY(percpu_executing_key,
