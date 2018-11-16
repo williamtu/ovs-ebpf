@@ -197,6 +197,8 @@ bpf_get(struct bpf_state *state, bool verbose)
         /* BPF Maps */
         {&state->upcalls.fd, "upcalls"},
         {&state->flow_table.fd, "flow_table"},
+        {&state->megaflow_table.fd, "megaflow_table"},
+        {&state->megaflow_mask_table.fd, "megaflow_mask_table"},
         {&state->datapath_stats.fd, "datapath_stats"},
         {&state->tailcalls.fd, "tailcalls"},
         {&state->downcall_metadata.fd, "downcall_metadata"},
@@ -282,6 +284,8 @@ bpf_get(struct bpf_state *state, bool verbose)
         state->upcalls.name = xstrdup("upcalls");
         state->xdp.name = xstrdup("xdp");
         state->flow_table.name = xstrdup("flow_table");
+        state->megaflow_table.name = xstrdup("ovs_megaflow_table");
+        state->megaflow_mask_table.name = xstrdup("ovs_megaflow_mask_table");
         state->datapath_stats.name = xstrdup("datapath_stats");
         state->dp_flow_stats.name = xstrdup("dp_flow_stats");
         // add parser, lookup, action, deparser
@@ -311,6 +315,8 @@ bpf_put(struct bpf_state *state)
     xclose(state->upcalls.fd, state->upcalls.name);
     xclose(state->xdp.fd, state->xdp.name);
     xclose(state->flow_table.fd, "ovs_map_flow_table");
+    xclose(state->megaflow_table.fd, state->megaflow_table.name);
+    xclose(state->megaflow_mask_table.fd, state->megaflow_mask_table.name);
     xclose(state->datapath_stats.fd, "ovs_datapath_stats");
     xclose(state->dp_flow_stats.fd, state->dp_flow_stats.name);
     free((void *)state->ingress.name);

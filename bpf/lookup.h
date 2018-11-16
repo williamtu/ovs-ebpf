@@ -154,10 +154,67 @@ flow_stats_account(struct ebpf_headers_t *headers,
     return;
 }
 
+static inline void
+ovs_flow_mask_key(struct bpf_flow_key *dst, struct bpf_flow_key *src,
+                  struct bpf_flow_key *mask)
+{
+    const long *m = (const long *) mask;
+    const long *s = (const long *) src;
+    long *d = (long *) dst;
+    int i;
+
+    #pragma unroll
+    for (i = 0; i < sizeof *dst; i += sizeof(long)) {
+        *d++ = *s++ & *m++;
+    }
+}
+
+static inline struct bpf_action_batch *
+megaflow_lookup(struct bpf_flow_key *key)
+{
+    struct bpf_megaflow_key megaflow_key = {};
+    struct bpf_megaflow_entry *entry;
+    struct bpf_megaflow_mask *mask;
+    int i, idx;
+
+    #pragma unroll
+    for (i = 0; i < BPF_DP_MAX_MEGAFLOW_MASK; ++i) {
+        idx = i;
+        mask = bpf_map_lookup_elem(&megaflow_mask_table, &idx);
+
+        if (!mask) {
+            break;
+        } else if (mask->is_valid) {
+            ovs_flow_mask_key(&megaflow_key.masked_key, key, &mask->mask);
+            megaflow_key.mask_id = i;
+
+            entry = bpf_map_lookup_elem(&megaflow_table, &megaflow_key);
+            if (entry) {
+                printt("Hit megaflow cache, mask %d\n", i);
+                return &entry->action_batch;
+            }
+        }
+    }
+
+    printt("Miss megaflow cache\n");
+    return NULL;
+}
+
 static inline struct bpf_action_batch *
 ovs_lookup_flow(struct bpf_flow_key *flow_key)
 {
-    return bpf_map_lookup_elem(&flow_table, flow_key);
+    struct bpf_action_batch *actions = NULL;
+
+    /* EMC lookup */
+    actions = bpf_map_lookup_elem(&flow_table, flow_key);
+    if (actions) {
+        printt("Hit EMC\n");
+        return actions;
+    }
+    printt("Miss EMC\n");
+
+    /* Megaflow lookup */
+    return  megaflow_lookup(flow_key);
 }
 
 __section_tail(MATCH_ACTION_CALL)

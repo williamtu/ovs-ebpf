@@ -56,6 +56,81 @@ ct_action_to_bpf(const struct nlattr *ct, struct bpf_action *dst)
     }
 }
 
+static enum odp_key_fitness
+odp_tun_to_bpf_exact_match_mask(const struct nlattr *nla, size_t nla_len,
+                                struct flow_tnl_t *tun_mask)
+{
+    const struct nlattr *a;
+    size_t left;
+
+    NL_ATTR_FOR_EACH(a, left, nla, nla_len) {
+        enum ovs_tunnel_key_attr type = nl_attr_type(a);
+
+        switch (type) {
+        case OVS_TUNNEL_KEY_ATTR_ID:
+            tun_mask->tun_id = OVS_BE32_MAX;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_IPV4_SRC:
+            tun_mask->ip4.ip_src = OVS_BE32_MAX;
+            tun_mask->use_ipv6 = 0xf;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_IPV4_DST:
+            tun_mask->ip4.ip_dst = OVS_BE32_MAX;
+            tun_mask->use_ipv6 = 0xf;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_TOS:
+            tun_mask->ip_tos = 0xff;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_TTL:
+            tun_mask->ip_ttl = 0xff;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_DONT_FRAGMENT:
+            // tun_mask->flags |= FLOW_TNL_F_DONT_FRAGMENT;
+            // in bpf helper, there is no tun_flags extracted
+            break;
+        case OVS_TUNNEL_KEY_ATTR_TP_DST:
+            tun_mask->tp_dst = OVS_BE16_MAX;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_TP_SRC:
+            tun_mask->tp_src = OVS_BE16_MAX;
+            break;
+        case OVS_TUNNEL_KEY_ATTR_IPV6_SRC:
+#ifdef BPF_ENABLE_IPV6
+            memset(&tun_mask->ip6.ipv6_src, 0xff, 16);
+            tun_mask->use_ipv6 = 0xf;
+#endif
+            break;
+        case OVS_TUNNEL_KEY_ATTR_IPV6_DST:
+#ifdef BPF_ENABLE_IPV6
+            memset(&tun_mask->ip6.ipv6_dst, 0xff, 16);
+            tun_mask->use_ipv6 = 0xf;
+#endif
+            break;
+        case OVS_TUNNEL_KEY_ATTR_GENEVE_OPTS:    /* Array of Geneve options. */
+            if (nl_attr_get_size(a) != sizeof tun_mask->gnvopt) {
+                VLOG_ERR("%s: geneve opts size is %ld, expect %ld", __func__,
+                         nl_attr_get_size(a), sizeof tun_mask->gnvopt);
+            } else {
+                memset(&tun_mask->gnvopt, 0xff, sizeof tun_mask->gnvopt);
+                tun_mask->gnvopt_valid = 0xf;
+            }
+            break;
+        case OVS_TUNNEL_KEY_ATTR_CSUM:          /* No argument. CSUM packet. */
+        case OVS_TUNNEL_KEY_ATTR_OAM:           /* No argument. OAM frame.  */
+        case OVS_TUNNEL_KEY_ATTR_VXLAN_OPTS:    /* Nested OVS_VXLAN_EXT_* */
+        case OVS_TUNNEL_KEY_ATTR_PAD:
+        case __OVS_TUNNEL_KEY_ATTR_MAX:
+            VLOG_INFO("%s: unknown type %d", __func__, type);
+            break;
+        default:
+            VLOG_INFO("%s: unknown type %d", __func__, type);
+            OVS_NOT_REACHED();
+        }
+    }
+
+    return ODP_FIT_PERFECT;
+}
+
 enum odp_key_fitness
 odp_tun_to_bpf_tun(const struct nlattr *nla, size_t nla_len,
                    struct flow_tnl_t *tun)
@@ -548,16 +623,10 @@ bpf_flow_key_to_flow(const struct bpf_flow_key *key, struct flow *flow)
     return ODP_FIT_PERFECT;
 }
 
-/* Converts the 'nla_len' bytes of OVS netlink-formatted flow key in 'nla' into
- * the bpf flow structure in 'key'. Returns an ODP_FIT_* value that indicates
- * how well 'nla' fits into the BPF flow key format. On success, 'in_port' will
- * be populated with the in_port specified by 'nla', which the caller must
- * convert from an ODP port number into an ifindex and place into 'key'.
- */
-enum odp_key_fitness
-odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
-                        struct bpf_flow_key *key, odp_port_t *in_port,
-                        bool inner, bool verbose)
+static enum odp_key_fitness
+odp_key_to_bpf_flow_key__(const struct nlattr *nla, size_t nla_len,
+                          struct bpf_flow_key *key, odp_port_t *in_port,
+                          bool is_key, bool inner, bool verbose)
 {
     bool found_in_port = false;
     const struct nlattr *a;
@@ -572,7 +641,11 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             break;
         case OVS_KEY_ATTR_IN_PORT: {
             /* The caller must convert the ODP port number into ifindex. */
-            *in_port = nl_attr_get_odp_port(a);
+            if (is_key) {
+                *in_port = nl_attr_get_odp_port(a);
+            } else {
+                key->mds.md.in_port = OVS_BE32_MAX;
+            }
             found_in_port = true;
             break;
         }
@@ -618,7 +691,7 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             } else if (dl_type == htons(ETH_P_MPLS_UC) ||
                        dl_type == htons(ETH_P_MPLS_MC)) {
                 key->headers.valid |= MPLS_VALID;
-            } else {
+            } else if (is_key) {
                 VLOG_WARN("%s dl_type %x not supported",
                           __func__, ntohs(dl_type));
             }
@@ -718,7 +791,7 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
             break;
         case OVS_KEY_ATTR_PACKET_TYPE: {
             ovs_be32 pt = nl_attr_get_be32(a);
-            if (pt != htonl(PT_ETH)) {
+            if (is_key && pt != htonl(PT_ETH)) {
                 return ODP_FIT_ERROR;
             }
             break;
@@ -779,7 +852,7 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
         }
     }
 
-    if (!inner && !found_in_port) {
+    if (is_key && !inner && !found_in_port) {
         VLOG_ERR("not found in_port");
         return ODP_FIT_ERROR;
     }
@@ -797,6 +870,215 @@ odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
     }
 
     return ODP_FIT_PERFECT;
+}
+
+static enum odp_key_fitness
+bpf_flow_key_to_exact_match_mask(const struct nlattr *key_nla, size_t key_len,
+                                 struct bpf_flow_key *mask, bool inner)
+{
+    /* Update this function whenever struct flow changes. */
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 40);
+
+    const struct nlattr *a;
+    size_t left;
+
+    NL_ATTR_FOR_EACH(a, left, key_nla, key_len) {
+        enum ovs_key_attr type = nl_attr_type(a);
+
+        switch (type) {
+        case OVS_KEY_ATTR_PRIORITY: {
+            mask->mds.md.skb_priority = OVS_BE32_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_IN_PORT: {
+            mask->mds.md.in_port = OVS_BE32_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_ETHERNET: {
+            memset(&mask->headers.ethernet.dstAddr, 0xff,
+                   sizeof mask->headers.ethernet.dstAddr);
+            memset(&mask->headers.ethernet.srcAddr, 0xff,
+                   sizeof mask->headers.ethernet.srcAddr);
+            break;
+        }
+        case OVS_KEY_ATTR_VLAN: {
+            struct vlan_tag_t *vlan = inner ? &mask->headers.cvlan
+                                            : &mask->headers.vlan;
+            vlan->tci = OVS_BE16_MAX;
+            mask->headers.vlan.tci = OVS_BE16_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_ETHERTYPE: {
+            mask->headers.ethernet.etherType = OVS_BE16_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_IPV4: {
+            mask->headers.ipv4.srcAddr = OVS_BE32_MAX;
+            mask->headers.ipv4.dstAddr = OVS_BE32_MAX;
+            mask->headers.ipv4.protocol = 0xff;
+            mask->headers.ipv4.ttl = 0xff;
+            /* XXX: ipv4->ipv4_frag; One of OVS_FRAG_TYPE_*. */
+            break;
+        }
+        case OVS_KEY_ATTR_IPV6: {
+#ifdef BPF_ENABLE_IPV6
+            memset(&mask->headers.ipv6.srcAddr, 0xff,
+                   ARRAY_SIZE(mask->headers.ipv6.srcAddr));
+            memset(&mask->headers.ipv6.dstAddr, 0xff,
+                   ARRAY_SIZE(mask->headers.ipv6.dstAddr));
+            mask->headers.ipv6.flowLabel = OVS_BE32_MAX;
+            mask->headers.ipv6.nextHdr = 0xff;
+            mask->headers.ipv6.trafficClass = 0xff;
+            mask->headers.ipv6.hopLimit = 0xff;
+            /* XXX: ipv6_frag;	One of OVS_FRAG_TYPE_*. */
+#endif
+            break;
+        }
+        case OVS_KEY_ATTR_TCP: {
+            mask->headers.tcp.srcPort = OVS_BE16_MAX;
+            mask->headers.tcp.dstPort = OVS_BE16_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_UDP: {
+            mask->headers.udp.srcPort = OVS_BE16_MAX;
+            mask->headers.udp.dstPort = OVS_BE16_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_ICMP: {
+            /* XXX: Double-check */
+            mask->headers.icmp.type = 0xff;
+            mask->headers.icmp.code = 0xff;
+            break;
+        }
+        case OVS_KEY_ATTR_ARP: {
+            mask->headers.arp.ar_op = OVS_BE16_MAX;
+            memset(mask->headers.arp.ar_sip, 0xff, 4);
+            memset(mask->headers.arp.ar_tip, 0xff, 4);
+            memset(mask->headers.arp.ar_sha, 0xff, 6);
+            memset(mask->headers.arp.ar_tha, 0xff, 6);
+            break;
+        }
+        case OVS_KEY_ATTR_SKB_MARK:
+            mask->mds.md.pkt_mark = OVS_BE32_MAX;
+            break;
+        case OVS_KEY_ATTR_TCP_FLAGS: {
+            mask->headers.tcp.flags = 0xff;
+            break;
+        }
+        case OVS_KEY_ATTR_DP_HASH:
+            mask->mds.md.dp_hash = OVS_BE32_MAX;
+            break;
+        case OVS_KEY_ATTR_RECIRC_ID:
+            mask->mds.md.recirc_id = OVS_BE32_MAX;
+            break;
+        case OVS_KEY_ATTR_CT_STATE:
+            mask->mds.md.ct_state = OVS_BE16_MAX;
+            break;
+        case OVS_KEY_ATTR_CT_ZONE:
+            mask->mds.md.ct_zone = OVS_BE16_MAX;
+            break;
+        case OVS_KEY_ATTR_CT_MARK:
+            mask->mds.md.ct_mark = OVS_BE32_MAX;
+            break;
+        case OVS_KEY_ATTR_CT_LABELS:
+            memset(&mask->mds.md.ct_label, 0xff,
+                   sizeof(mask->mds.md.ct_label));
+            break;
+        case OVS_KEY_ATTR_PACKET_TYPE:
+            /* No need to set packet type to flow mask. */
+            break;
+        case OVS_KEY_ATTR_MPLS: {
+            mask->headers.mpls.top_lse = OVS_BE32_MAX;
+            break;
+        }
+        case OVS_KEY_ATTR_ENCAP: {
+            enum odp_key_fitness ret;
+            ret = odp_mask_to_bpf_flow_mask(NULL, 0, nl_attr_get(a),
+                                            nl_attr_get_size(a), mask,
+                                            true, false);
+            if (ret != ODP_FIT_PERFECT) {
+                return ret;
+            }
+            break;
+        }
+        case OVS_KEY_ATTR_TUNNEL: {
+            enum odp_key_fitness ret;
+            ret = odp_tun_to_bpf_exact_match_mask(nl_attr_get(a),
+                                                  nl_attr_get_size(a),
+                                                  &mask->mds.tnl_md);
+            if (ret != ODP_FIT_PERFECT) {
+                VLOG_ERR("%s odp key to bpf tunnel key error", __func__);
+                return ret;
+            }
+            break;
+        }
+        case OVS_KEY_ATTR_CT_ORIG_TUPLE_IPV4:
+        case OVS_KEY_ATTR_CT_ORIG_TUPLE_IPV6:
+            break;
+        case OVS_KEY_ATTR_ICMPV6: {
+            mask->headers.icmpv6.type = 0xff;
+            mask->headers.icmpv6.code = 0xff;
+            break;
+        }
+        case OVS_KEY_ATTR_ND: {
+            // XXX skip
+            break;
+        }
+        case OVS_KEY_ATTR_SCTP:
+        case OVS_KEY_ATTR_NSH:
+        {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 20);
+            struct ds ds = DS_EMPTY_INITIALIZER;
+			// compile error, remove it
+            // odp_format_key_attr(a, NULL, NULL, &ds, verbose);
+            VLOG_INFO_RL(&rl, "Cannot convert \'%s\'", ds_cstr(&ds));
+            ds_destroy(&ds);
+            return ODP_FIT_ERROR;
+        }
+        case OVS_KEY_ATTR_UNSPEC:
+        case __OVS_KEY_ATTR_MAX:
+        default:
+            OVS_NOT_REACHED();
+        }
+    }
+
+    return ODP_FIT_PERFECT;
+}
+
+/* Converts the 'nla_len' bytes of OVS netlink-formatted flow key in 'nla' into
+ * the bpf flow structure in 'key'. Returns an ODP_FIT_* value that indicates
+ * how well 'nla' fits into the BPF flow key format. On success, 'in_port' will
+ * be populated with the in_port specified by 'nla', which the caller must
+ * convert from an ODP port number into an ifindex and place into 'key'.
+ */
+enum odp_key_fitness
+odp_key_to_bpf_flow_key(const struct nlattr *nla, size_t nla_len,
+                        struct bpf_flow_key *key, odp_port_t *in_port,
+                        bool inner, bool verbose)
+{
+    return odp_key_to_bpf_flow_key__(nla, nla_len, key, in_port, true,
+                                     inner, verbose);
+}
+
+/* Converts the 'nla_len' bytes of OVS netlink-formatted flow mask in 'nla'
+ * into the bpf flow structure in 'mask'. Returns an ODP_FIT_* value that
+ * indicates how well 'nla' fits into the BPF flow key format.
+ */
+enum odp_key_fitness
+odp_mask_to_bpf_flow_mask(const struct nlattr *mask_nla OVS_UNUSED,
+                          size_t mask_len OVS_UNUSED,
+                          const struct nlattr *key_nla, size_t key_len,
+                          struct bpf_flow_key *mask, bool inner OVS_UNUSED,
+                          bool verbose OVS_UNUSED)
+{
+    if (mask_len) {
+        return odp_key_to_bpf_flow_key__(mask_nla, mask_len, mask, NULL,
+                                         false, inner, verbose);
+    } else {
+      /* A missing mask means that the flow should be exact matched.
+       * Generate an appropriate exact wildcard for the flow. */
+      return bpf_flow_key_to_exact_match_mask(key_nla, key_len, mask, inner);
+    }
 }
 
 #define TABSPACE "  "

@@ -41,6 +41,7 @@
 #define BPFMAP_OPENVSWITCH_H 1
 
 #include "api.h"
+#include "odp-bpf.h"
 #include "openvswitch.h"
 #include "helpers.h"
 #include "generated_headers.h"
@@ -92,6 +93,29 @@ BPF_HASH(dp_flow_stats,
         sizeof(struct bpf_flow_stats),
         0,
         256
+);
+
+/* BPF megaflow mask table
+ * Access: BPF is the reader,
+ *         ovs-vswitchd is the writer.
+ */
+BPF_ARRAY(megaflow_mask_table,
+          0,
+          sizeof(struct bpf_megaflow_mask),
+          0,
+          BPF_DP_MAX_MEGAFLOW_MASK
+);
+
+/* BPF megaflow table
+ * Access: BPF DP is the reader for lookup,
+ *         ovs-vswitchd is the writer.
+ */
+BPF_HASH(megaflow_table,
+         0,
+         sizeof(struct bpf_megaflow_key),
+         sizeof(struct bpf_megaflow_entry),
+         0,
+         2048
 );
 
 /*

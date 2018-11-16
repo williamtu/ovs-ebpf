@@ -50,6 +50,8 @@ struct bpf_state {
 
     struct bpf_map upcalls;             /* BPF_MAP_TYPE_PERF_ARRAY */
     struct bpf_map flow_table;          /* BPF_MAP_TYPE_HASH */
+    struct bpf_map megaflow_table;      /* BPF_MAP_TYPE_HASH */
+    struct bpf_map megaflow_mask_table; /* BPF_MAP_TYPE_ARRAY */
     struct bpf_map datapath_stats;      /* BPF_MAP_TYPE_ARRAY */
     struct bpf_map tailcalls;           /* BPF_PROG_TYPE_PROG_ARRARY */
     struct bpf_map downcall_metadata;     /* BPF_MAP_TYPE_ARRAY */
