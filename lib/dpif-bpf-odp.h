@@ -39,6 +39,10 @@ enum odp_key_fitness odp_key_to_bpf_flow_key(const struct nlattr *, size_t,
                                              struct bpf_flow_key *,
                                              odp_port_t *in_port,
                                              bool inner, bool verbose);
+enum odp_key_fitness odp_mask_to_bpf_flow_mask(const struct nlattr *, size_t,
+                                               const struct nlattr *, size_t,
+                                               struct bpf_flow_key *,
+                                               bool inner, bool verbose);
 enum odp_key_fitness odp_tun_to_bpf_tun(const struct nlattr *nla,
                                         size_t nla_len,
                                         struct flow_tnl_t *tun);

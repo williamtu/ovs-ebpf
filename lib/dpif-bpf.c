@@ -48,6 +48,8 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(60, 60);
 
 /* Protects against changes to 'bpf_datapaths'. */
 static struct ovs_mutex bpf_datapath_mutex = OVS_MUTEX_INITIALIZER;
+/* Protects against chagnes to flow tables. */
+static struct ovs_mutex bpf_flow_table_mutex = OVS_MUTEX_INITIALIZER;
 
 /* Contains all 'struct dpif_bpf_dp's. */
 static struct shash bpf_datapaths OVS_GUARDED_BY(bpf_datapath_mutex)
@@ -1108,13 +1110,14 @@ fetch_flow(struct dpif_bpf_dp *dp, struct dpif_flow *flow,
 static int
 dpif_bpf_insert_flow(struct bpf_flow_key *flow_key,
                      struct bpf_action_batch *actions)
+    OVS_REQUIRES(bpf_flow_table_mutex)
 {
     int err;
 
-    VLOG_DBG("Insert bof_flow_key:");
+    VLOG_DBG("Insert bpf_flow_key to EMC:");
     vlog_hex_dump((unsigned char *)flow_key, sizeof *flow_key);
 
-    VLOG_DBG("Insert action:");
+    VLOG_DBG("Insert action to EMC:");
     vlog_hex_dump((unsigned char *)actions, sizeof actions[0]);
 
     ovs_assert(datapath.bpf.flow_table.fd != -1);
@@ -1122,7 +1125,7 @@ dpif_bpf_insert_flow(struct bpf_flow_key *flow_key,
                               flow_key,
                               actions, BPF_ANY);
     if (err) {
-        VLOG_ERR("Failed to add flow into flow table, map fd %d, error %s",
+        VLOG_ERR("Failed to add flow into EMC flow table, map fd %d, error %s",
                  datapath.bpf.flow_table.fd, ovs_strerror(errno));
         return errno;
     }
@@ -1130,9 +1133,270 @@ dpif_bpf_insert_flow(struct bpf_flow_key *flow_key,
     return 0;
 }
 
+static void
+dpif_bpf_flow_mask_key(struct bpf_flow_key *dst, struct bpf_flow_key *src,
+                       struct bpf_flow_key *mask)
+{
+    const long *m = (const long *) mask;
+    const long *s = (const long *) src;
+    long *d = (long *) dst;
+    int i;
+
+    for (i = 0; i < sizeof *dst; i += sizeof(long)) {
+        *d++ = *s++ & *m++;
+    }
+}
+
+static bool
+dpif_bpf_flow_key_equal(struct bpf_flow_key *a, struct bpf_flow_key *b)
+{
+    return (memcmp((void *) a, (void *) b, sizeof *a) == 0);
+}
+
+/* If 'mask' is in the megaflow mask table, returns true and sets index of
+ * mask to '*mask_id'.  Otherwise, returns false, and sets '*first_avail'
+ * to the first available location in the mask table. If megaflow mask
+ * table is full, sets '*first_avail" to -1.
+ */
+static bool
+dpif_bpf_megaflow_mask_exist(struct bpf_flow_key *mask, uint32_t *mask_id,
+                             int *first_avail)
+{
+    struct bpf_megaflow_mask old_mask;
+    int i, err;
+
+    *first_avail = -1;
+
+    for (i = 0; i < BPF_DP_MAX_MEGAFLOW_MASK; ++i) {
+        err = bpf_map_lookup_elem(datapath.bpf.megaflow_mask_table.fd, &i,
+                                  &old_mask);
+        if (err != 0) {
+            VLOG_ERR("Failed to look up megaflow mask table, map fd %d, "
+                     "error %s",
+                     datapath.bpf.megaflow_mask_table.fd,
+                     ovs_strerror(err));
+            break;
+        }
+        if (old_mask.is_valid) {
+            if (dpif_bpf_flow_key_equal(&old_mask.mask, mask)) {
+                *mask_id = i;
+                return true;
+            }
+        } else if (*first_avail == -1){
+            *first_avail = i;
+        }
+    }
+    return false;
+}
+
+/* Insert 'mask' into megaflow_mask_table.
+ * If 'mask' is already exist, sets the '*mask_id', and returns 1.
+ * If 'mask' does not exist, try to insert it to the table. Sets '*mask_id'
+ * to the inserted location and return 0 if successful. Otherwise, returns -1.
+ */
+static int
+dpif_bpf_insert_megaflow_mask(struct bpf_flow_key *mask, uint32_t *mask_id)
+{
+    int ret, first_avail_megaflow_mask;
+
+    if (!dpif_bpf_megaflow_mask_exist(mask, mask_id,
+                                      &first_avail_megaflow_mask)) {
+        VLOG_INFO("No existing megaflow mask");
+
+        if (first_avail_megaflow_mask != -1) {
+            struct bpf_megaflow_mask new_mask;
+            new_mask.is_valid = true;
+            new_mask.ref_count = 0;
+            new_mask.mask = *mask;
+
+            VLOG_INFO("Insert bpf_magaflow_mask:");
+            vlog_hex_dump((unsigned char *)mask, sizeof *mask);
+            ret = bpf_map_update_elem(datapath.bpf.megaflow_mask_table.fd,
+                                      &first_avail_megaflow_mask, &new_mask,
+                                      BPF_ANY);
+            if (ret) {
+                VLOG_ERR("Failed to add megaflow mask into megaflow mask "
+                         "table, map fd %d, error %s",
+                         datapath.bpf.megaflow_mask_table.fd,
+                         ovs_strerror(errno));
+                return -1;
+            } else {
+                *mask_id = first_avail_megaflow_mask;
+                VLOG_INFO("Inserts a new megaflow mask to pos %d in the mask "
+                          "table.",
+                          first_avail_megaflow_mask);
+            }
+        } else {
+            return -1;
+        }
+    } else {
+        VLOG_INFO("The megaflow mask is already at megaflow mask table %d",
+                  *mask_id);
+    }
+
+    return 0;
+}
+
+static void
+dpif_bpf_update_mask_refcount(int id, bool ref)
+{
+    struct bpf_megaflow_mask mask;
+    int err;
+
+    err = bpf_map_lookup_elem(datapath.bpf.megaflow_mask_table.fd, &id, &mask);
+    if (err != 0) {
+        VLOG_ERR("Failed to look up megaflow mask table id %d, map fd %d, "
+                 "error %s",
+                 id, datapath.bpf.megaflow_mask_table.fd, ovs_strerror(err));
+        return;
+    }
+
+    if (ref) {
+        mask.ref_count++;
+    } else {
+        ovs_assert(mask.ref_count > 0);
+        mask.ref_count--;
+        if (mask.ref_count == 0) {
+            mask.is_valid = false;
+        }
+    }
+
+    err = bpf_map_update_elem(datapath.bpf.megaflow_mask_table.fd, &id, &mask,
+                              BPF_ANY);
+    if (err) {
+              VLOG_ERR("Failed to add megaflow mask into megaflow mask"
+                        " table, map fd %d, error %s",
+                        datapath.bpf.megaflow_mask_table.fd,
+                        ovs_strerror(errno));
+    }
+}
+
+static int
+dpif_bpf_insert_megaflow(struct bpf_flow_key *key,
+                         struct bpf_flow_key *mask,
+                         struct bpf_action_batch *actions)
+    OVS_REQUIRES(bpf_flow_table_mutex)
+{
+    struct bpf_megaflow_key megaflow_key = {};
+    struct bpf_megaflow_entry old_megaflow_entry, new_megaflow_entry;
+    uint32_t mask_id;
+    int ret;
+
+    ret = dpif_bpf_insert_megaflow_mask(mask, &mask_id);
+    if (ret == -1) {
+        VLOG_INFO("Failed to insert megaflow mask.");
+        return ret;
+    }
+
+    /* Apply mask to flow key, and set mask id. */
+    dpif_bpf_flow_mask_key(&megaflow_key.masked_key, key, mask);
+    megaflow_key.mask_id = mask_id;
+    new_megaflow_entry.flow_key = *key;
+    new_megaflow_entry.action_batch = *actions;
+
+    /* Found existing mask in the mask table */
+    if (ret == 1) {
+        /* Found existing megaflow in the megaflow table */
+        if (bpf_map_lookup_elem(datapath.bpf.megaflow_table.fd,
+                                &megaflow_key, &old_megaflow_entry) == 0) {
+            VLOG_INFO("Update action to an existing megaflow.");
+
+            ovs_assert(datapath.bpf.megaflow_table.fd != -1);
+            if (!dpif_bpf_flow_key_equal(&old_megaflow_entry.flow_key, key)) {
+                VLOG_ERR("Failed to insert megaflow since we are updating "
+                         "overlapping maksed key.\n");
+                return -1;
+            }
+            ret = bpf_map_update_elem(datapath.bpf.megaflow_table.fd,
+                                      &new_megaflow_entry, actions, BPF_ANY);
+            if (ret) {
+                VLOG_ERR("Failed to add flow into flow table, map fd %d, "
+                         "error %s",
+                         datapath.bpf.flow_table.fd, ovs_strerror(errno));
+                return errno;
+            }
+        }
+    }
+
+    /* Insert a new megaflow to megaflow table */
+    VLOG_INFO("Insert bpf_megaflow_masked_key: mask id: %d",
+              megaflow_key.mask_id);
+    vlog_hex_dump((unsigned char *)&megaflow_key,
+                      sizeof megaflow_key);
+
+    ovs_assert(datapath.bpf.megaflow_table.fd != -1);
+    ret = bpf_map_update_elem(datapath.bpf.megaflow_table.fd,
+                              &megaflow_key, &new_megaflow_entry, BPF_ANY);
+    if (ret) {
+        VLOG_ERR("Failed to add flow into flow table, map fd %d, error %s",
+                 datapath.bpf.flow_table.fd, ovs_strerror(errno));
+        return errno;
+    }
+    dpif_bpf_update_mask_refcount(megaflow_key.mask_id, true);
+
+    return 0;
+}
+
+static int
+dpif_bpf_delete_megaflow(struct bpf_flow_key *key)
+    OVS_REQUIRES(bpf_flow_table_mutex)
+{
+    struct bpf_megaflow_key megaflow_key = {};
+    struct bpf_megaflow_entry megaflow_entry;
+    struct bpf_megaflow_mask mask;
+    int i, err;
+
+    for (i = 0; i < BPF_DP_MAX_MEGAFLOW_MASK; ++i) {
+        err = bpf_map_lookup_elem(datapath.bpf.megaflow_mask_table.fd, &i,
+                                  &mask);
+        if (err != 0) {
+            VLOG_ERR("Failed to look up megaflow mask table, map fd %d, "
+                     "error %s",
+                     datapath.bpf.megaflow_mask_table.fd, ovs_strerror(err));
+            return err;
+        }
+        if (mask.is_valid) {
+            dpif_bpf_flow_mask_key(&megaflow_key.masked_key, key, &mask.mask);
+            megaflow_key.mask_id = i;
+
+            err = bpf_map_lookup_elem(datapath.bpf.megaflow_table.fd,
+                                    &megaflow_key, &megaflow_entry);
+            if (err == 0) {
+                if (dpif_bpf_flow_key_equal(&megaflow_entry.flow_key, key)) {
+                    err = bpf_map_delete_elem(datapath.bpf.megaflow_table.fd,
+                                              &megaflow_key);
+                    if (err) {
+                        VLOG_ERR("Failed to delete megaflow, map fd %d,"
+                                 "error %s",
+                                 datapath.bpf.megaflow_mask_table.fd,
+                                 ovs_strerror(err));
+                        return -1;
+                    }
+                    dpif_bpf_update_mask_refcount(i, false);
+                    return 0;
+                } else {
+                    VLOG_ERR("Failed to delete megaflow. Same masked key but "
+                             "different key is observed.");
+                }
+            } else {
+            if (err) {
+                VLOG_INFO("Failed to look up megaflow table, map fd %d, "
+                          "error %s",
+                          datapath.bpf.megaflow_mask_table.fd,
+                          ovs_strerror(err));
+                }
+            }
+        }
+    }
+
+    VLOG_WARN("Failed to find megaflow in megaflow table");
+    return -1;
+}
+
 static int
 dpif_bpf_delete_flow(struct bpf_flow_key *flow_key,
                      struct dpif_flow_stats *stats)
+    OVS_REQUIRES(bpf_flow_table_mutex)
 {
     int err;
     struct bpf_action_batch actions;
@@ -1154,6 +1418,11 @@ dpif_bpf_delete_flow(struct bpf_flow_key *flow_key,
         VLOG_ERR("Failed to del flow into flow table, map fd %d: %s",
                  datapath.bpf.flow_table.fd, ovs_strerror(errno));
         return errno;
+    }
+
+    err = dpif_bpf_delete_megaflow(flow_key);
+    if (err) {
+        return err;
     }
 
     if (stats) {
@@ -1423,8 +1692,8 @@ prepare_bpf_flow__(struct dpif_bpf_dp *dp,
                    const struct nlattr *key, size_t key_len,
                    const struct nlattr *mask, size_t mask_len,
                    const struct nlattr *actions, size_t actions_len,
-                   struct bpf_flow_key *key_out, struct bpf_action_batch *batch,
-                   bool verbose)
+                   struct bpf_flow_key *key_out, struct bpf_flow_key *mask_out,
+                   struct bpf_action_batch *batch, bool verbose)
 {
     odp_port_t in_port;
     int err = EINVAL;
@@ -1454,6 +1723,27 @@ prepare_bpf_flow__(struct dpif_bpf_dp *dp,
             ds_destroy(&ds);
         }
         return err;
+    }
+
+    if (mask_out) {
+        memset(mask_out, 0, sizeof *mask_out);
+        if (odp_mask_to_bpf_flow_mask(mask, mask_len, key, key_len, mask_out,
+                                      false, verbose)) {
+            if (verbose) {
+                struct ds ds = DS_EMPTY_INITIALIZER;
+
+                /* XXX: Use dpif_format_flow()? */
+                odp_flow_format(key, key_len, mask, mask_len, NULL, &ds,
+                                true);
+                VLOG_WARN("Failed to translate odp mask to bpf mask:\n%s",
+                          ds_cstr(&ds));
+                ds_destroy(&ds);
+            }
+            return err;
+        }
+        // TODO: check this fix ifindex mask
+        // mask_out->headers.valid = 0;
+        // mask_out->mds.md.in_port = 0xffffffff;
     }
 
     err = set_in_port(dp, key_out, in_port);
@@ -1494,7 +1784,7 @@ prepare_bpf_flow(struct dpif_bpf_dp *dp, const struct nlattr *key,
                  size_t key_len, struct bpf_flow_key *key_out, bool verbose)
 {
     return prepare_bpf_flow__(dp, key, key_len, NULL, 0, NULL, 0, key_out,
-                              NULL, verbose);
+                              NULL, NULL, verbose);
 }
 
 static void
@@ -1515,16 +1805,21 @@ dpif_bpf_operate(struct dpif *dpif_, struct dpif_op **ops, size_t n_ops)
             struct dpif_flow_put *put = &op->u.flow_put;
             bool verbose = !(put->flags & DPIF_FP_PROBE);
             struct bpf_action_batch action_batch;
-            struct bpf_flow_key key;
+            struct bpf_flow_key key, mask;
             int err;
 
             err = prepare_bpf_flow__(dp, put->key, put->key_len,
                                      put->mask, put->mask_len,
                                      put->actions, put->actions_len,
-                                     &key, &action_batch, verbose);
+                                     &key, &mask, &action_batch, verbose);
+            ovs_mutex_lock(&bpf_flow_table_mutex);
             if (!err) {
                 err = dpif_bpf_insert_flow(&key, &action_batch);
             }
+            if (!err) {
+                err = dpif_bpf_insert_megaflow(&key, &mask, &action_batch);
+            }
+            ovs_mutex_unlock(&bpf_flow_table_mutex);
             op->error = err;
             break;
         }
@@ -1547,7 +1842,9 @@ dpif_bpf_operate(struct dpif *dpif_, struct dpif_op **ops, size_t n_ops)
 
             err = prepare_bpf_flow(dp, del->key, del->key_len, &key, true);
             if (!err) {
+                ovs_mutex_lock(&bpf_flow_table_mutex);
                 err = dpif_bpf_delete_flow(&key, del->stats);
+                ovs_mutex_unlock(&bpf_flow_table_mutex);
             }
             op->error = err;
             break;

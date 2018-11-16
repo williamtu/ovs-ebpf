@@ -253,4 +253,21 @@ struct bpf_action_batch {
     struct bpf_action actions[BPF_DP_MAX_ACTION];
 };
 
+#define BPF_DP_MAX_MEGAFLOW_MASK 28
+struct bpf_megaflow_mask {
+    struct bpf_flow_key mask;
+    uint16_t ref_count;
+    bool is_valid;
+};
+
+struct bpf_megaflow_key {
+    struct bpf_flow_key masked_key;
+    uint32_t mask_id;
+};
+
+struct bpf_megaflow_entry {
+    struct bpf_flow_key flow_key;
+    struct bpf_action_batch action_batch;
+};
+
 #endif /* BPF_OPENVSWITCH_H */
