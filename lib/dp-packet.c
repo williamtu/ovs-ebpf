@@ -23,6 +23,9 @@
 #include "openvswitch/dynamic-string.h"
 #include "util.h"
 
+#include "openvswitch/vlog.h"
+VLOG_DEFINE_THIS_MODULE(dp_packet);
+
 static void
 dp_packet_init__(struct dp_packet *b, size_t allocated, enum dp_packet_source source)
 {
@@ -121,6 +124,16 @@ dp_packet_uninit(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
 #endif
+        } else if (b->source == DPBUF_AFXDP) {
+            struct dp_packet_afxdp *xpacket;
+
+            xpacket = dp_packet_cast_afxdp(b);
+            if (xpacket->mpool)
+                umem_elem_push(xpacket->mpool, dp_packet_base(b));
+
+            VLOG_WARN("%s push back %p %p",
+                      __func__, &xpacket->mpool, dp_packet_base(b));
+            return;
         }
     }
 }
@@ -249,6 +262,18 @@ dp_packet_resize__(struct dp_packet *b, size_t new_headroom, size_t new_tailroom
     case DPBUF_STACK:
         OVS_NOT_REACHED();
 
+    case DPBUF_AFXDP:
+        if (new_headroom == dp_packet_headroom(b)) {
+            new_base = xmalloc(new_allocated);
+        } else {
+            new_base = xmalloc(new_allocated);
+            dp_packet_copy__(b, new_base, new_headroom, new_tailroom);
+            free(dp_packet_base(b));
+        }
+        b->source = DPBUF_MALLOC;
+        // put back to freelist
+        OVS_NOT_REACHED();
+        break;
     case DPBUF_STUB:
         b->source = DPBUF_MALLOC;
         new_base = xmalloc(new_allocated);
@@ -434,6 +459,7 @@ dp_packet_steal_data(struct dp_packet *b)
 {
     void *p;
     ovs_assert(b->source != DPBUF_DPDK);
+    ovs_assert(b->source != DPBUF_AFXDP);
 
     if (b->source == DPBUF_MALLOC && dp_packet_data(b) == dp_packet_base(b)) {
         p = dp_packet_data(b);
