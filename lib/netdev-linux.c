@@ -74,6 +74,7 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
+#include "if_xdp.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -85,6 +86,590 @@ COVERAGE_DEFINE(netdev_set_hwaddr);
 COVERAGE_DEFINE(netdev_get_ethtool);
 COVERAGE_DEFINE(netdev_set_ethtool);
 
+#define AFXDP_NETDEV
+#ifdef AFXDP_NETDEV
+// =========================================================
+#ifndef SOL_XDP
+#define SOL_XDP 283
+#endif
+#ifndef AF_XDP
+#define AF_XDP 44
+#endif
+#ifndef PF_XDP
+#define PF_XDP AF_XDP
+#endif
+#define DEBUG_HEXDUMP 0
+
+typedef __u32 u32;
+typedef uint64_t u64;
+
+#include "lib/xdpsock.h"
+
+#define AFXDP_MODE XDP_FLAGS_SKB_MODE // DRV_MODE or SKB_MODE 
+//#define DEBUG
+
+static u32 opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
+static u32 opt_xdp_bind_flags;
+
+struct xdp_uqueue {
+    u32 cached_prod;
+    u32 cached_cons;
+    u32 mask;
+    u32 size;
+    u32 *producer;
+    u32 *consumer;
+    struct xdp_desc *ring;
+    void *map;
+};
+
+struct xdpsock {
+    struct xdp_uqueue rx;
+    struct xdp_uqueue tx;
+    int sfd;
+    struct xdp_umem *umem;
+    u32 outstanding_tx;
+    unsigned long rx_npkts;
+    unsigned long tx_npkts;
+    unsigned long prev_rx_npkts;
+    unsigned long prev_tx_npkts;
+};
+
+#define MAX_SOCKS 4
+
+#define barrier() __asm__ __volatile__("": : :"memory")
+#define u_smp_rmb() barrier()
+#define u_smp_wmb() barrier()
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
+static const char pkt_data[] =
+    "\x3c\xfd\xfe\x9e\x7f\x71\xec\xb1\xd7\x98\x3a\xc0\x08\x00\x45\x00"
+    "\x00\x2e\x00\x00\x00\x00\x40\x11\x88\x97\x05\x08\x07\x08\xc8\x14"
+    "\x1e\x04\x10\x92\x10\x92\x00\x1a\x6d\xa3\x34\x33\x1f\x69\x40\x6b"
+    "\x54\x59\xb6\x14\x2d\x11\x44\xbf\xaf\xd9\xbe\xaa";
+
+static inline u32 xq_nb_avail(struct xdp_uqueue *q, u32 ndescs)
+{
+    u32 entries = q->cached_prod - q->cached_cons;
+
+    if (entries == 0) {
+        q->cached_prod = *q->producer;
+        entries = q->cached_prod - q->cached_cons;
+    }
+
+    return (entries > ndescs) ? ndescs : entries;
+}
+
+static inline u32 umem_nb_free(struct xdp_umem_uqueue *q, u32 nb)
+{
+    u32 free_entries = q->cached_cons - q->cached_prod;
+
+    if (free_entries >= nb)
+        return free_entries;
+
+    /* Refresh the local tail pointer */
+    q->cached_cons = (*q->consumer + q->size) & q->mask;
+
+    return q->cached_cons - q->cached_prod;
+}
+
+static inline int umem_fill_to_kernel_ex(struct xdp_umem_uqueue *fq,
+                                         struct xdp_desc *d,
+                                         size_t nb)
+{
+        u32 i;
+
+        if (umem_nb_free(fq, nb) < nb)  {
+            VLOG_ERR("%s error\n", __func__);
+            return -ENOSPC;
+        }
+
+        for (i = 0; i < nb; i++) {
+                u32 idx = fq->cached_prod++ & fq->mask;
+
+                fq->ring[idx] = d[i].addr;
+        }
+
+        u_smp_wmb();
+
+        *fq->producer = fq->cached_prod;
+
+        return 0;
+}
+
+static inline int umem_fill_to_kernel(struct xdp_umem_uqueue *fq, uint64_t *d,
+                      size_t nb)
+{
+    u32 i;
+
+    if (umem_nb_free(fq, nb) < nb) {
+        VLOG_ERR("%s error\n", __func__);
+        return -ENOSPC;
+    }
+
+    for (i = 0; i < nb; i++) {
+        u32 idx = fq->cached_prod++ & fq->mask;
+
+        fq->ring[idx] = d[i];
+    }
+
+    u_smp_wmb();
+
+    *fq->producer = fq->cached_prod;
+
+    return 0;
+}
+
+static inline u32 umem_nb_avail(struct xdp_umem_uqueue *q, u32 nb)
+{
+    u32 entries = q->cached_prod - q->cached_cons;
+
+    if (entries == 0) {
+        q->cached_prod = *q->producer;
+        entries = q->cached_prod - q->cached_cons;
+    }
+
+    return (entries > nb) ? nb : entries;
+}
+
+static inline size_t umem_complete_from_kernel(struct xdp_umem_uqueue *cq,
+                           uint64_t *d, size_t nb)
+{
+    u32 idx, i, entries = umem_nb_avail(cq, nb);
+
+    u_smp_rmb();
+
+    for (i = 0; i < entries; i++) {
+        idx = cq->cached_cons++ & cq->mask;
+        d[i] = cq->ring[idx];
+    }
+
+    if (entries > 0) {
+        u_smp_wmb();
+
+        *cq->consumer = cq->cached_cons;
+    }
+
+    return entries;
+}
+
+static struct xdp_umem *xdp_umem_configure(int sfd)
+{
+    int fq_size = FQ_NUM_DESCS, cq_size = CQ_NUM_DESCS;
+    struct xdp_mmap_offsets off;
+    struct xdp_umem_reg mr;
+    struct xdp_umem *umem;
+    socklen_t optlen;
+    void *bufs;
+    int i;
+
+    umem = calloc(1, sizeof(*umem));
+    ovs_assert(umem);
+
+
+    VLOG_DBG("enter: %s \n", __func__);
+
+//#define HUGETLB
+#define ADDR (void *)(0x0UL)
+#define FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB)
+#define PROTECTION (PROT_READ | PROT_WRITE)
+
+#ifdef HUGETLB
+// mount -t hugetlbfs nodev /mnt
+// echo 4 > /proc/sys/vm/nr_hugepages
+    bufs = mmap(ADDR, NUM_FRAMES * FRAME_SIZE, PROTECTION, FLAGS, -1, 0);
+    if (bufs == MAP_FAILED) {
+        VLOG_FATAL("mmap hugetlb fails %s", ovs_strerror(errno)); 
+    }
+#else
+    ovs_assert(posix_memalign(&bufs, getpagesize(), /* PAGE_SIZE aligned */
+                   NUM_FRAMES * FRAME_SIZE) == 0);
+#endif
+    VLOG_INFO("%s shared umem from %p to %p", __func__,
+              bufs, (char*)bufs + NUM_FRAMES * FRAME_SIZE);
+
+    mr.addr = (__u64)bufs;
+    mr.len = NUM_FRAMES * FRAME_SIZE;
+    mr.chunk_size = FRAME_SIZE;
+    mr.headroom = FRAME_HEADROOM;
+
+    ovs_assert(setsockopt(sfd, SOL_XDP, XDP_UMEM_REG, &mr, sizeof(mr)) == 0);
+    ovs_assert(setsockopt(sfd, SOL_XDP, XDP_UMEM_FILL_RING, &fq_size,
+               sizeof(int)) == 0);
+    ovs_assert(setsockopt(sfd, SOL_XDP, XDP_UMEM_COMPLETION_RING, &cq_size,
+               sizeof(int)) == 0);
+
+    optlen = sizeof(off);
+    ovs_assert(getsockopt(sfd, SOL_XDP, XDP_MMAP_OFFSETS, &off,
+               &optlen) == 0);
+
+    umem->fq.map = mmap(0, off.fr.desc +
+                FQ_NUM_DESCS * sizeof(u64),
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_POPULATE, sfd,
+                XDP_UMEM_PGOFF_FILL_RING);
+    ovs_assert(umem->fq.map != MAP_FAILED);
+
+    umem->fq.mask = FQ_NUM_DESCS - 1;
+    umem->fq.size = FQ_NUM_DESCS;
+    umem->fq.producer = (void *)((char *)umem->fq.map + off.fr.producer);
+    umem->fq.consumer = (void *)((char *)umem->fq.map + off.fr.consumer);
+    umem->fq.ring = (void *)((char *)umem->fq.map + off.fr.desc);
+    umem->fq.cached_cons = FQ_NUM_DESCS;
+
+    umem->cq.map = mmap(0, off.cr.desc +
+                 CQ_NUM_DESCS * sizeof(u64),
+                 PROT_READ | PROT_WRITE,
+                 MAP_SHARED | MAP_POPULATE, sfd,
+                 XDP_UMEM_PGOFF_COMPLETION_RING);
+    ovs_assert(umem->cq.map != MAP_FAILED);
+
+    umem->cq.mask = CQ_NUM_DESCS - 1;
+    umem->cq.size = CQ_NUM_DESCS;
+    umem->cq.producer = (void *)((char *)umem->cq.map + off.cr.producer);
+    umem->cq.consumer = (void *)((char *)umem->cq.map + off.cr.consumer);
+    umem->cq.ring = (void *)((char *)umem->cq.map + off.cr.desc);
+
+    umem->frames = bufs;
+    umem->fd = sfd;
+    ovs_assert(!umem_pool_init(&umem->mpool, NUM_FRAMES));
+
+    // initialize the umem->frame
+    for (i = NUM_FRAMES - 1; i >= 0; i--) {
+        struct umem_elem *elem;
+
+        elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
+        umem_elem_push(&umem->mpool, elem); 
+        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->mpool));
+    }
+
+    xpacket_pool_init(&umem->xpool, NUM_FRAMES);
+    VLOG_INFO("%s xpacket pool from %p to %p", __func__,
+              umem->xpool.array,
+              (char *)umem->xpool.array + NUM_FRAMES * sizeof(struct dp_packet_afxdp));
+
+    VLOG_INFO("xpacket init done");
+    // initialize the dp_packet array
+    for (i = NUM_FRAMES - 1; i >= 0; i--) {
+        struct dp_packet_afxdp *xpacket;
+        struct dp_packet *packet;
+        char *base;
+
+        xpacket = (char *)umem->xpool.array + i * sizeof(struct dp_packet_afxdp);
+        xpacket->mpool = &umem->mpool;
+
+        VLOG_INFO("xpacket %p", xpacket);
+        packet = &xpacket->packet;
+        packet->source = DPBUF_AFXDP;
+
+        base = (char *)umem->frames + i * FRAME_SIZE;
+        dp_packet_use(packet, base, FRAME_SIZE);
+        packet->source = DPBUF_AFXDP;
+//        dp_packet_set_rss_hash(packet, 0x17802c29);
+    }
+//    VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
+
+#if 0
+    if (opt_bench == BENCH_TXONLY) {
+        int i;
+
+        for (i = 0; i < NUM_FRAMES; i++)
+            (void)gen_eth_frame(&umem->frames[i][0]);
+    }
+#endif
+    return umem;
+}
+
+static struct xdpsock *xsk_configure(struct xdp_umem *umem,
+                                     int ifindex, int xdp_queue_id)
+{
+    struct sockaddr_xdp sxdp = {};
+    struct xdp_mmap_offsets off;
+    int sfd, ndescs = NUM_DESCS;
+    struct xdpsock *xsk;
+    bool shared = false;
+    socklen_t optlen;
+    u64 i;
+
+    opt_xdp_flags |= AFXDP_MODE;
+    //opt_xdp_bind_flags |= XDP_ZEROCOPY;
+    opt_xdp_bind_flags |= XDP_COPY;
+    opt_xdp_bind_flags |= XDP_ATTACH;
+
+    sfd = socket(PF_XDP, SOCK_RAW, 0);
+    ovs_assert(sfd >= 0);
+
+    xsk = calloc(1, sizeof(*xsk));
+    ovs_assert(xsk);
+
+    xsk->sfd = sfd;
+    xsk->outstanding_tx = 0;
+
+    VLOG_DBG("enter: %s xsk fd %d", __func__, sfd);
+
+    if (!umem) {
+        shared = false;
+        xsk->umem = xdp_umem_configure(sfd);
+    } else {
+        xsk->umem = umem;
+        ovs_assert(0);
+    }
+
+    ovs_assert(setsockopt(sfd, SOL_XDP, XDP_RX_RING,
+               &ndescs, sizeof(int)) == 0);
+    ovs_assert(setsockopt(sfd, SOL_XDP, XDP_TX_RING,
+               &ndescs, sizeof(int)) == 0);
+    optlen = sizeof(off);
+    ovs_assert(getsockopt(sfd, SOL_XDP, XDP_MMAP_OFFSETS, &off,
+               &optlen) == 0);
+
+    /* Rx */
+    xsk->rx.map = mmap(NULL,
+               off.rx.desc +
+               NUM_DESCS * sizeof(struct xdp_desc),
+               PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_POPULATE, sfd,
+               XDP_PGOFF_RX_RING);
+    ovs_assert(xsk->rx.map != MAP_FAILED);
+
+/*
+    if (!shared) {
+        for (i = 0; i < NUM_DESCS * FRAME_SIZE; i += FRAME_SIZE)
+            ovs_assert(umem_fill_to_kernel(&xsk->umem->fq, &i, 1)
+                == 0);
+    }
+*/
+
+    for (i = 0; i < NUM_DESCS; i++) {
+        struct umem_elem *elem;
+        uint64_t desc[1]; 
+
+        elem = umem_elem_pop(&xsk->umem->mpool);
+        desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
+        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->mpool));
+        umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
+    }
+
+    // FIXME: we also configure tx here
+    /* Tx */
+    xsk->tx.map = mmap(NULL,
+               off.tx.desc +
+               NUM_DESCS * sizeof(struct xdp_desc),
+               PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_POPULATE, sfd,
+               XDP_PGOFF_TX_RING);
+    ovs_assert(xsk->tx.map != MAP_FAILED);
+
+    xsk->rx.mask = NUM_DESCS - 1;
+    xsk->rx.size = NUM_DESCS;
+    xsk->rx.producer = (void *)((char *)xsk->rx.map + off.rx.producer);
+    xsk->rx.consumer = (void *)((char *)xsk->rx.map + off.rx.consumer);
+    xsk->rx.ring = (void *)((char *)xsk->rx.map + off.rx.desc);
+
+    xsk->tx.mask = NUM_DESCS - 1;
+    xsk->tx.size = NUM_DESCS;
+    xsk->tx.producer = (void *)((char *)xsk->tx.map + off.tx.producer);
+    xsk->tx.consumer = (void *)((char *)xsk->tx.map + off.tx.consumer);
+    xsk->tx.ring = (void *)((char *)xsk->tx.map + off.tx.desc);
+    xsk->tx.cached_cons = NUM_DESCS;
+
+    /* XSK socket */
+    sxdp.sxdp_family = PF_XDP;
+    sxdp.sxdp_ifindex = ifindex;
+    sxdp.sxdp_queue_id = xdp_queue_id;
+
+    if (shared) {
+        sxdp.sxdp_flags = XDP_SHARED_UMEM;
+        sxdp.sxdp_shared_umem_fd = umem->fd;
+    } else {
+        sxdp.sxdp_flags = opt_xdp_bind_flags;
+    }
+
+    if (bind(sfd, (struct sockaddr *)&sxdp, sizeof(sxdp))) {
+        VLOG_FATAL("afxdp bind failed (%s)", ovs_strerror(errno));
+    }
+    
+
+    return xsk;
+}
+
+static inline int xq_deq(struct xdp_uqueue *uq,
+             struct xdp_desc *descs,
+             int ndescs)
+{
+    struct xdp_desc *r = uq->ring;
+    unsigned int idx;
+    int i, entries;
+
+    entries = xq_nb_avail(uq, ndescs);
+
+    u_smp_rmb();
+
+    for (i = 0; i < entries; i++) {
+        idx = uq->cached_cons++ & uq->mask;
+        descs[i] = r[idx];
+    }
+
+    if (entries > 0) {
+        u_smp_wmb();
+
+        *uq->consumer = uq->cached_cons;
+    }
+    return entries;
+}
+
+static inline void *xq_get_data(struct xdpsock *xsk, u64 addr)
+{
+    return &xsk->umem->frames[addr];
+}
+
+static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+    ds_put_hex_dump(&ds, buf, count, 0, false);
+    VLOG_INFO("\n%s", ds_cstr(&ds));
+    ds_destroy(&ds);
+}
+
+static void kick_tx(int fd)
+{
+    int ret;
+    struct pollfd fds[1];
+    int timeout;
+
+#if 0
+    fds[0].fd = fd;
+    fds[0].events = POLLOUT;
+    timeout = 1000; /* 1ns */
+
+    ret = poll(fds, 1, timeout);
+    if (ret < 0)
+        return;
+#endif
+    ret = sendto(fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
+    if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
+        return;
+    } else {
+        VLOG_FATAL("sendto fails %s", ovs_strerror(errno));
+    }
+}
+
+static inline void complete_tx_l2fwd(struct xdpsock *xsk)
+{
+    u64 descs[BATCH_SIZE];
+    unsigned int rcvd;
+    size_t ndescs;
+
+    if (!xsk->outstanding_tx)
+        return;
+
+    kick_tx(xsk->sfd);
+    ndescs = (xsk->outstanding_tx > BATCH_SIZE) ? BATCH_SIZE :
+         xsk->outstanding_tx;
+
+    /* re-add completed Tx buffers */
+    rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, ndescs);
+
+    if (rcvd > 0) {
+        umem_fill_to_kernel(&xsk->umem->fq, descs, rcvd);
+        xsk->outstanding_tx -= rcvd;
+        xsk->tx_npkts += rcvd;
+    }
+}
+
+static inline void complete_tx_only(struct xdpsock *xsk)
+{
+    u64 descs[BATCH_SIZE];
+    unsigned int rcvd;
+
+    if (!xsk->outstanding_tx) {
+        VLOG_DBG("no outstanding_tx");
+        return;
+    }
+
+    kick_tx(xsk->sfd);
+
+    rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
+    if (rcvd > 0) {
+            xsk->outstanding_tx -= rcvd;
+            xsk->tx_npkts += rcvd;
+    }
+}
+
+static inline u32 xq_nb_free(struct xdp_uqueue *q, u32 ndescs)
+{
+    u32 free_entries = q->cached_cons - q->cached_prod;
+
+    if (free_entries >= ndescs)
+        return free_entries;
+
+    /* Refresh the local tail pointer */
+    q->cached_cons = *q->consumer + q->size;
+    return q->cached_cons - q->cached_prod;
+}
+
+static inline int xq_enq(struct xdp_uqueue *uq,
+             const struct xdp_desc *descs,
+             unsigned int ndescs)
+{
+    struct xdp_desc *r = uq->ring;
+    unsigned int i;
+
+    if (xq_nb_free(uq, ndescs) < ndescs)
+        return -ENOSPC;
+
+    for (i = 0; i < ndescs; i++) {
+        u32 idx = uq->cached_prod++ & uq->mask;
+
+        r[idx].addr = descs[i].addr;
+        r[idx].len = descs[i].len;
+    }
+
+    u_smp_wmb();
+
+    *uq->producer = uq->cached_prod;
+    return 0;
+}
+
+static inline int xq_enq_tx_only(struct xdp_uqueue *uq,
+                 unsigned int id, unsigned int ndescs)
+{
+    struct xdp_desc *r = uq->ring;
+    unsigned int i;
+
+    if (xq_nb_free(uq, ndescs) < ndescs)
+        return -ENOSPC;
+
+    for (i = 0; i < ndescs; i++) {
+        u32 idx = uq->cached_prod++ & uq->mask;
+
+        r[idx].addr = (id + i) << FRAME_SHIFT;
+        r[idx].len  = sizeof(pkt_data) - 1;
+    }
+
+    u_smp_wmb();
+
+    *uq->producer = uq->cached_prod;
+    return 0;
+}
+
+static inline void print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
+#ifdef DEBUG
+    struct xdp_statistics stat;
+    socklen_t optlen;
+
+    optlen = sizeof(stat);
+    ovs_assert(getsockopt(xsk->sfd, SOL_XDP, XDP_STATISTICS,
+                &stat, &optlen) == 0);
+
+    VLOG_INFO("rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
+             stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
+#else
+    return;
+#endif
+}
+// =========================================================
+#endif
 
 #ifndef IFLA_IF_NETNSID
 #define IFLA_IF_NETNSID 0x45
@@ -523,6 +1108,7 @@ struct netdev_linux {
 
     /* LAG information. */
     bool is_lag_master;         /* True if the netdev is a LAG master. */
+    struct xdpsock *xsk[16];    /* af_xdp socket: each queue has one xdp sock */
 };
 
 struct netdev_rxq_linux {
@@ -569,6 +1155,12 @@ static bool
 is_netdev_linux_class(const struct netdev_class *netdev_class)
 {
     return netdev_class->run == netdev_linux_run;
+}
+
+static bool
+is_afxdp_netdev(const struct netdev *netdev)
+{
+    return netdev_get_class(netdev) == &netdev_afxdp_class;
 }
 
 static bool
@@ -1073,6 +1665,23 @@ netdev_linux_destruct(struct netdev *netdev_)
         atomic_count_dec(&miimon_cnt);
     }
 
+    if (is_afxdp_netdev(netdev_)) {
+        int ifindex;
+        struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+
+        get_ifindex(netdev_, &ifindex);
+#ifdef HUGETLB
+        munmap(netdev->xsk[0]->umem->frames, NUM_FRAMES * FRAME_SIZE);
+#else
+        free(netdev->xsk[0]->umem->frames);
+#endif
+        umem_pool_cleanup(&netdev->xsk[0]->umem->mpool);
+        xpacket_pool_cleanup(&netdev->xsk[0]->umem->xpool);
+
+        close(netdev->xsk[0]->sfd);
+        VLOG_INFO("destruct afxdp device, ifindex = %d", ifindex);
+    }
+
     ovs_mutex_destroy(&netdev->mutex);
 }
 
@@ -1102,6 +1711,37 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     rx->is_tap = is_tap_netdev(netdev_);
     if (rx->is_tap) {
         rx->fd = netdev->tap_fd;
+    } else if (is_afxdp_netdev(netdev_)) {
+        // setup AF_XDP socket here, see xsk_configure
+        struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
+        int ifindex, num_socks = 0;
+        struct xdpsock *xsk;
+        //int xdp_queue_id = 1; // FIXME
+        int xdp_queue_id = 0; // FIXME
+        int key = 0;
+        int xsk_fd;
+
+        if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+            VLOG_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
+                      ovs_strerror(errno));
+            ovs_assert(0);
+        }
+
+        VLOG_INFO("%s: %s: queue=%d configuring xdp sock",
+                  __func__, netdev_->name, xdp_queue_id);
+
+        /* Get ethernet device index. */
+        error = get_ifindex(&netdev->up, &ifindex);
+        if (error) {
+            goto error;
+        }
+
+        xsk = xsk_configure(NULL, ifindex, xdp_queue_id);
+
+        netdev->xsk[num_socks++] = xsk;
+        rx->fd = xsk->sfd; //for upper layer to poll
+        xsk_fd = xsk->sfd;
+
     } else {
         struct sockaddr_ll sll;
         int ifindex, val;
@@ -1301,6 +1941,79 @@ netdev_linux_rxq_recv_tap(int fd, struct dp_packet *buffer)
     return 0;
 }
 
+/* Receive packet from AF_XDP socket */
+static inline int
+netdev_linux_rxq_xsk(struct xdpsock *xsk,
+                     struct dp_packet_batch *batch)
+{
+    struct xdp_desc descs[NETDEV_MAX_BURST];
+    unsigned int rcvd, i = 0, non_afxdp = 0;
+    int ret = 0;
+
+    rcvd = xq_deq(&xsk->rx, descs, NETDEV_MAX_BURST);
+    if (rcvd == 0) {
+        return 0;
+    }
+
+#if 1 
+    for (i = 0; i < rcvd; i++) {
+        struct dp_packet_afxdp *xpacket;
+        struct dp_packet *packet;
+        void *base;
+        int index;
+
+        base = xq_get_data(xsk, descs[i].addr);
+
+        //xpacket = xmalloc(sizeof *xpacket);
+        //xpacket = (struct dp_packet_afxdp *)((char *)base - FRAME_HEADROOM);
+
+        index = (descs[i].addr - FRAME_HEADROOM) / FRAME_SIZE;
+
+        xpacket = (char *)xsk->umem->xpool.array + index * sizeof(struct dp_packet_afxdp);
+#ifdef DEBUG
+        VLOG_WARN("rcvd %d base %p xpacket %p index %d", rcvd, base, xpacket, index);
+        vlog_hex_dump(base, 14);
+#endif
+        packet = &xpacket->packet;
+        xpacket->mpool = &xsk->umem->mpool;
+
+        if (packet->source != DPBUF_AFXDP && packet->source != 0) {
+            non_afxdp++;
+            continue;
+        }
+
+        packet->source = DPBUF_AFXDP;
+        dp_packet_set_data(packet, base);
+        dp_packet_set_size(packet, descs[i].len);
+
+        /* add packet into batch, batch->count inc */
+//        dp_packet_set_rss_hash(packet, 0x17802c29);
+        dp_packet_batch_add(batch, packet);
+    }
+#endif
+    rcvd -= non_afxdp;
+    xsk->rx_npkts += rcvd;
+
+    for (i = 0; i < rcvd; i++) {
+        struct umem_elem *elem;
+        struct xdp_desc descs[1];
+        int retry_cnt = 0;
+retry:
+        elem = umem_elem_pop(&xsk->umem->mpool);
+        if (!elem && retry_cnt < 10) {
+            retry_cnt++;
+            VLOG_WARN("retry refilling the fill queue");
+            xsleep(1);
+            goto retry;
+        }
+        descs[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
+        umem_fill_to_kernel_ex(&xsk->umem->fq, descs, 1);
+    }
+
+//    print_xsk_stat(xsk);
+    return ret;
+}
+
 static int
 netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
                       int *qfill)
@@ -1310,17 +2023,26 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     struct dp_packet *buffer;
     ssize_t retval;
     int mtu;
+    struct netdev_linux *netdev_ = netdev_linux_cast(netdev);
 
-    if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
-        mtu = ETH_PAYLOAD_MAX;
+    if (!is_afxdp_netdev(netdev)) {
+        if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
+            mtu = ETH_PAYLOAD_MAX;
+        }
+
+        /* Assume Ethernet port. No need to set packet_type. */
+        buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
+                                           DP_NETDEV_HEADROOM);
     }
 
-    /* Assume Ethernet port. No need to set packet_type. */
-    buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
-                                           DP_NETDEV_HEADROOM);
+    if (is_afxdp_netdev(netdev)) {
+        return netdev_linux_rxq_xsk(netdev_->xsk[0], batch);
+    }
+   
     retval = (rx->is_tap
-              ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
-              : netdev_linux_rxq_recv_sock(rx->fd, buffer));
+              ? netdev_linux_rxq_recv_tap(rx->fd, buffer) :
+              (is_afxdp_netdev(netdev) ? netdev_linux_rxq_xsk(netdev_->xsk[0], batch) :
+                                        netdev_linux_rxq_recv_sock(rx->fd, buffer)));
 
     if (retval) {
         if (retval != EAGAIN && retval != EMSGSIZE) {
@@ -1328,6 +2050,12 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
                          netdev_rxq_get_name(rxq_), ovs_strerror(errno));
         }
         dp_packet_delete(buffer);
+    } else if (is_afxdp_netdev(netdev)) {
+        dp_packet_batch_init_packet_fields(batch);
+
+        return retval;
+//if (batch->count != 0)
+// VLOG_INFO("%s AFXDP recv %lu packets", __func__, batch->count);
     } else {
         dp_packet_batch_init_packet(batch, buffer);
     }
@@ -1363,6 +2091,119 @@ netdev_linux_rxq_drain(struct netdev_rxq *rxq_)
         return drain_rcvbuf(rx->fd);
     }
 }
+
+static int
+netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
+                              struct dp_packet_batch *batch)
+{
+    struct dp_packet *packet;
+    struct xdp_uqueue *uq;
+    struct xdp_desc *r;
+    int ndescs = batch->count;
+
+    VLOG_INFO("%s send %lu packet to fd %d", __func__, batch->count, xsk->sfd);
+    VLOG_INFO("%s outstanding tx %d", __func__, xsk->outstanding_tx);
+
+    /* cleanup and refill */
+    uq = &xsk->tx;
+    r = uq->ring;
+
+    // see tx_only and xq_enq_tx_only
+    if (xq_nb_free(uq, ndescs) < ndescs) {
+        VLOG_ERR("no free desc, outstanding tx %d, free tx nb %d",
+                    xsk->outstanding_tx, xq_nb_free(uq, ndescs));
+        return -EAGAIN;
+    }
+
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        struct umem_elem *elem;
+        struct dp_packet_afxdp *xpacket;
+
+        u32 idx = uq->cached_prod++ & uq->mask;
+//#define AVOID_TXCOPY
+#ifdef AVOID_TXCOPY
+        if (packet->source == DPBUF_AFXDP) {
+            xpacket = dp_packet_cast_afxdp(packet);
+
+            if (xpacket->mpool == &xsk->umem->mpool) {
+                // avoid the copy by resuing the umem_elem
+                r[idx].addr = (uint64_t)((char *)dp_packet_base(packet) - xsk->umem->frames);
+                r[idx].len = dp_packet_size(packet);
+                xpacket->mpool = NULL;
+                continue;
+            }
+        }
+#endif
+        // FIXME: find available id
+        //VLOG_INFO("TX pop umem counter %d", umem_elem_count(&xsk->umem->head));
+        elem = umem_elem_pop(&xsk->umem->mpool);
+//      VLOG_INFO("TX umem counter %d", umem_elem_count(&xsk->umem->));
+
+        if (!elem) {
+            VLOG_ERR("no available elem!");
+            OVS_NOT_REACHED();
+        }
+//      VLOG_INFO("elem %p", elem);
+
+        memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
+
+        vlog_hex_dump(dp_packet_data(packet), 14);
+        r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
+        r[idx].len = dp_packet_size(packet);
+
+//    VLOG_INFO("%s send 0x%llx", __func__, r[idx].addr);
+        if (packet->source == DPBUF_AFXDP) {
+            xpacket = dp_packet_cast_afxdp(packet);
+//            VLOG_INFO("TX from umem: head %p push back %p magic %x",
+//                  xpacket->freelist_head, dp_packet_base(packet), xpacket->magic);
+            umem_elem_push(xpacket->mpool, dp_packet_base(packet));
+            xpacket->mpool = NULL; // so we won't free it twice
+            //FIXME:
+        }
+    }
+
+    u_smp_wmb();
+
+    *uq->producer = uq->cached_prod;
+    xsk->outstanding_tx += batch->count;
+
+//    complete_tx_only(xsk);
+    u64 descs[BATCH_SIZE];
+    unsigned int rcvd = 0, total_tx = 0;
+    int i, gap;
+
+retry:
+    kick_tx(xsk->sfd);
+
+    rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
+    if (rcvd > 0) {
+            xsk->outstanding_tx -= rcvd;
+            xsk->tx_npkts += rcvd;
+            total_tx += rcvd;
+    }
+
+    VLOG_INFO("%s complete %d tx", __func__, rcvd);
+    for (i = 0; i < rcvd; i++) {
+        struct umem_elem *elem;
+
+        elem = (struct umem_elem *)(descs[i] + xsk->umem->frames);
+        umem_elem_push(&xsk->umem->mpool, elem);
+#ifdef DEBUG
+        VLOG_INFO("TX push back head %p elem %p counter %d", &xsk->umem->mpool,
+                  elem, umem_elem_count(&xsk->umem->mpool));
+#endif
+    }
+
+    gap = batch->count - total_tx; 
+
+    if (total_tx < batch->count && xsk->outstanding_tx > (CQ_NUM_DESCS/2)) {
+        goto retry;
+    }
+    //print_xsk_stat(xsk);
+    //VLOG_INFO("outstanding tx %d", xsk->outstanding_tx);
+    return 0;
+}
+
 
 static int
 netdev_linux_sock_batch_send(int sock, int ifindex,
@@ -1469,7 +2310,8 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
     int error = 0;
     int sock = 0;
 
-    if (!is_tap_netdev(netdev_)) {
+    if (!is_tap_netdev(netdev_) &&
+        !is_afxdp_netdev(netdev_)) {
         if (netdev_linux_netnsid_is_remote(netdev_linux_cast(netdev_))) {
             error = EOPNOTSUPP;
             goto free_batch;
@@ -1488,6 +2330,17 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
         }
 
         error = netdev_linux_sock_batch_send(sock, ifindex, batch);
+    } else if (is_afxdp_netdev(netdev_)) {
+        struct xdpsock *xsk;
+        struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+ 
+        xsk = netdev->xsk[0]; // FIXME: always use queue 0
+        error = netdev_linux_afxdp_batch_send(xsk, batch);      
+        if (error == -EAGAIN) {
+            error = netdev_linux_afxdp_batch_send(xsk, batch);
+        } else if (error != 0) {
+            goto free_batch;
+        }
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
@@ -3205,6 +4058,7 @@ const struct netdev_class netdev_linux_class = {
     NETDEV_LINUX_CLASS_COMMON,
     LINUX_FLOW_OFFLOAD_API,
     .type = "system",
+    .is_pmd = false,
     .construct = netdev_linux_construct,
     .get_stats = netdev_linux_get_stats,
     .get_features = netdev_linux_get_features,
@@ -3215,6 +4069,7 @@ const struct netdev_class netdev_linux_class = {
 const struct netdev_class netdev_tap_class = {
     NETDEV_LINUX_CLASS_COMMON,
     .type = "tap",
+    .is_pmd = false,
     .construct = netdev_linux_construct_tap,
     .get_stats = netdev_tap_get_stats,
     .get_features = netdev_linux_get_features,
@@ -3224,6 +4079,16 @@ const struct netdev_class netdev_tap_class = {
 const struct netdev_class netdev_internal_class = {
     NETDEV_LINUX_CLASS_COMMON,
     .type = "internal",
+    .is_pmd = false,
+    .construct = netdev_linux_construct,
+    .get_stats = netdev_internal_get_stats,
+    .get_status = netdev_internal_get_status,
+};
+
+const struct netdev_class netdev_afxdp_class = {
+    NETDEV_LINUX_CLASS_COMMON,
+    .type = "afxdp",
+    .is_pmd = true,
     .construct = netdev_linux_construct,
     .get_stats = netdev_internal_get_stats,
     .get_status = netdev_internal_get_status,
