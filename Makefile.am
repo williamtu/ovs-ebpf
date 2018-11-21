@@ -91,6 +91,8 @@ EXTRA_DIST = \
 	$(MAN_ROOTS) \
 	Vagrantfile \
 	Vagrantfile-FreeBSD \
+	afxdp.sh \
+	kill-ovs.sh \
 	.mailmap
 bin_PROGRAMS =
 sbin_PROGRAMS =
