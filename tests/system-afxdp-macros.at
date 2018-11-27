@@ -15,10 +15,6 @@ m4_define([_ADD_BR], [[add-br $1 -- set Bridge $1 datapath_type="netdev" protoco
 m4_define([OVS_TRAFFIC_VSWITCHD_START],
   [
    export OVS_PKGDATADIR=$(`pwd`)
-   #OVS_WAIT_WHILE([ip link show ovs-netdev])
-   umount /sys/fs/bpf/
-   AT_CHECK([mount -t bpf none /sys/fs/bpf])
-   AT_CHECK([mkdir -p /sys/fs/bpf/ovs])
    _OVS_VSWITCHD_START([--disable-system])
    dnl Add bridges, ports, etc.
    OVS_WAIT_WHILE([ip link show br0])
@@ -42,7 +38,6 @@ m4_define([OVS_TRAFFIC_VSWITCHD_STOP],
 $1";/netdev_linux.*obtaining netdev stats via vport failed/d
 /dpif_netlink.*Generic Netlink family 'ovs_datapath' does not exist. The Open vSwitch kernel module is probably not loaded./d"])
    AT_CHECK([:; $2])
-   AT_CHECK([umount /sys/fs/bpf])
   ])
 
 m4_define([ADD_VETH_AFXDP],
