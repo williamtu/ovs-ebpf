@@ -1,0 +1,148 @@
+# _ADD_BR([name])
+#
+# Expands into the proper ovs-vsctl commands to create a bridge with the
+# appropriate type and properties
+m4_define([_ADD_BR], [[add-br $1 -- set Bridge $1 datapath_type="netdev" protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13,OpenFlow14,OpenFlow15 fail-mode=secure ]])
+
+# OVS_TRAFFIC_VSWITCHD_START([vsctl-args], [vsctl-output], [=override])
+#
+# Creates a database and starts ovsdb-server, starts ovs-vswitchd
+# connected to that database, calls ovs-vsctl to create a bridge named
+# br0 with predictable settings, passing 'vsctl-args' as additional
+# commands to ovs-vsctl.  If 'vsctl-args' causes ovs-vsctl to provide
+# output (e.g. because it includes "create" commands) then 'vsctl-output'
+# specifies the expected output after filtering through uuidfilt.
+m4_define([OVS_TRAFFIC_VSWITCHD_START],
+  [
+   export OVS_PKGDATADIR=$(`pwd`)
+   #OVS_WAIT_WHILE([ip link show ovs-netdev])
+   umount /sys/fs/bpf/
+   AT_CHECK([mount -t bpf none /sys/fs/bpf])
+   AT_CHECK([mkdir -p /sys/fs/bpf/ovs])
+   _OVS_VSWITCHD_START([--disable-system])
+   dnl Add bridges, ports, etc.
+   OVS_WAIT_WHILE([ip link show br0])
+   AT_CHECK([ovs-vsctl -- _ADD_BR([br0]) -- $1 m4_if([$2], [], [], [| uuidfilt])], [0], [$2])
+])
+
+# OVS_TRAFFIC_VSWITCHD_STOP([WHITELIST], [extra_cmds])
+#
+# Gracefully stops ovs-vswitchd and ovsdb-server, checking their log files
+# for messages with severity WARN or higher and signaling an error if any
+# is present.  The optional WHITELIST may contain shell-quoted "sed"
+# commands to delete any warnings that are actually expected, e.g.:
+#
+#   OVS_TRAFFIC_VSWITCHD_STOP(["/expected error/d"])
+#
+# 'extra_cmds' are shell commands to be executed afte OVS_VSWITCHD_STOP() is
+# invoked. They can be used to perform additional cleanups such as name space
+# removal.
+m4_define([OVS_TRAFFIC_VSWITCHD_STOP],
+  [OVS_VSWITCHD_STOP([dnl
+$1";/netdev_linux.*obtaining netdev stats via vport failed/d
+/dpif_netlink.*Generic Netlink family 'ovs_datapath' does not exist. The Open vSwitch kernel module is probably not loaded./d"])
+   AT_CHECK([:; $2])
+   AT_CHECK([umount /sys/fs/bpf])
+  ])
+
+m4_define([ADD_VETH_AFXDP],
+    [ AT_CHECK([ip link add $1 type veth peer name ovs-$1 || return 77])
+      CONFIGURE_VETH_OFFLOADS([$1])
+      AT_CHECK([ip link set $1 netns $2])
+      AT_CHECK([ip link set dev ovs-$1 up])
+      AT_CHECK([ovs-vsctl add-port $3 ovs-$1 -- \
+                set interface ovs-$1 external-ids:iface-id="$1" type="afxdp"])
+      NS_CHECK_EXEC([$2], [ip addr add $4 dev $1 $7])
+      NS_CHECK_EXEC([$2], [ip link set dev $1 up])
+      if test -n "$5"; then
+        NS_CHECK_EXEC([$2], [ip link set dev $1 address $5])
+      fi
+      if test -n "$6"; then
+        NS_CHECK_EXEC([$2], [ip route add default via $6])
+      fi
+      on_exit 'ip link del ovs-$1'
+    ]
+)
+
+
+# CONFIGURE_VETH_OFFLOADS([VETH])
+#
+# Disable TX offloads for veths.  The userspace datapath uses the AF_PACKET
+# socket to receive packets for veths.  Unfortunately, the AF_PACKET socket
+# doesn't play well with offloads:
+# 1. GSO packets are received without segmentation and therefore discarded.
+# 2. Packets with offloaded partial checksum are received with the wrong
+#    checksum, therefore discarded by the receiver.
+#
+# By disabling tx offloads in the non-OVS side of the veth peer we make sure
+# that the AF_PACKET socket will not receive bad packets.
+#
+# This is a workaround, and should be removed when offloads are properly
+# supported in netdev-linux.
+m4_define([CONFIGURE_VETH_OFFLOADS],
+    [AT_CHECK([ethtool -K $1 tx off], [0], [ignore], [ignore])]
+)
+
+# CHECK_CONNTRACK()
+#
+# Perform requirements checks for running conntrack tests.
+#
+m4_define([CHECK_CONNTRACK],
+    [AT_SKIP_IF([test $HAVE_PYTHON = no])]
+)
+
+# CHECK_CONNTRACK_ALG()
+#
+# Perform requirements checks for running conntrack ALG tests. The userspace
+# supports FTP and TFTP.
+#
+m4_define([CHECK_CONNTRACK_ALG])
+
+# CHECK_CONNTRACK_FRAG()
+#
+# Perform requirements checks for running conntrack fragmentations tests.
+# The userspace doesn't support fragmentation yet, so skip the tests.
+m4_define([CHECK_CONNTRACK_FRAG],
+[
+    AT_SKIP_IF([:])
+])
+
+# CHECK_CONNTRACK_LOCAL_STACK()
+#
+# Perform requirements checks for running conntrack tests with local stack.
+# While the kernel connection tracker automatically passes all the connection
+# tracking state from an internal port to the OpenvSwitch kernel module, there
+# is simply no way of doing that with the userspace, so skip the tests.
+m4_define([CHECK_CONNTRACK_LOCAL_STACK],
+[
+    AT_SKIP_IF([:])
+])
+
+# CHECK_CONNTRACK_NAT()
+#
+# Perform requirements checks for running conntrack NAT tests. The userspace
+# datapath supports NAT.
+#
+m4_define([CHECK_CONNTRACK_NAT])
+
+# CHECK_CT_DPIF_FLUSH_BY_CT_TUPLE()
+#
+# Perform requirements checks for running ovs-dpctl flush-conntrack by
+# conntrack 5-tuple test. The userspace datapath does not support
+# this feature yet.
+m4_define([CHECK_CT_DPIF_FLUSH_BY_CT_TUPLE],
+[
+    AT_SKIP_IF([:])
+])
+
+# CHECK_CT_DPIF_SET_GET_MAXCONNS()
+#
+# Perform requirements checks for running ovs-dpctl ct-set-maxconns or
+# ovs-dpctl ct-get-maxconns. The userspace datapath does support this feature.
+m4_define([CHECK_CT_DPIF_SET_GET_MAXCONNS])
+
+# CHECK_CT_DPIF_GET_NCONNS()
+#
+# Perform requirements checks for running ovs-dpctl ct-get-nconns. The
+# userspace datapath does support this feature.
+m4_define([CHECK_CT_DPIF_GET_NCONNS])

@@ -489,7 +489,7 @@ static void kick_tx(int fd)
     if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
         return;
     } else {
-        VLOG_FATAL("sendto fails %s", ovs_strerror(errno));
+        VLOG_WARN("sendto fails %s", ovs_strerror(errno));
     }
 }
 
