@@ -1,4 +1,4 @@
-AT_BANNER([AFXDP netdev datapath-sanity])
+AT_BANNER([AF_XDP netdev datapath-sanity])
 
 AT_SETUP([datapath - ping between two ports])
 OVS_TRAFFIC_VSWITCHD_START()
@@ -35,3 +35,6 @@ NS_CHECK_EXEC([at_ns0], [wget 10.1.1.2 -t 3 -T 1 --retry-connrefused -v -o wget0
 
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
+
+
+
