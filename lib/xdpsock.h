@@ -70,7 +70,6 @@ struct xdpsock {
     unsigned long prev_tx_npkts;
 };
 
-
 struct umem_elem_head {
     unsigned int index;
     struct ovs_mutex mutex;
@@ -81,15 +80,15 @@ struct umem_elem {
     struct umem_elem *next;
 };
 
-/* array-based stack */
+/* LIFO ptr_array */
 struct umem_pool {
     int index;      /* point to top */
     unsigned int size;
     struct ovs_mutex mutex;
-    void **array;
+    void **array;   /* a pointer array */
 };
 
-/* array-based dp_packet */
+/* array-based dp_packet_afxdp */
 struct xpacket_pool {
     unsigned int size;
     struct dp_packet_afxdp **array;
@@ -114,12 +113,7 @@ struct xdp_umem {
     struct xdp_umem_uqueue cq; 
     int fd; 
 };
-#if 0
-void umem_elem_push(struct umem_elem_head *head,
-                    struct umem_elem *elem);
-struct umem_elem *umem_elem_pop(struct umem_elem_head *head);
-unsigned int umem_elem_count(struct umem_elem_head *head);
-#endif
+
 void __umem_elem_push(struct umem_pool *umemp, void *addr);
 void umem_elem_push(struct umem_pool *umemp, void *addr);
 void *__umem_elem_pop(struct umem_pool *umemp);

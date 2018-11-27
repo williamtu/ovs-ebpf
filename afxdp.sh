@@ -24,6 +24,8 @@ ovs-vsctl -- add-br br0 -- set Bridge br0 datapath_type=netdev
 ip netns add at_ns0 
 #ovs-appctl vlog/set dbg
 #ovs-appctl vlog/set poll_loop::off
+ovs-appctl vlog/set netdev_afxdp::dbg
+
 ip link add p0 type veth peer name afxdp-p0 
 ip link set p0 netns at_ns0
 ip link set dev afxdp-p0 up
@@ -46,10 +48,10 @@ ip addr add "10.1.1.2/24" dev p1
 ip link set dev p1 up
 NS_EXEC_HEREDOC
 
-ovs-ofctl del-flows br0
+#ovs-ofctl del-flows br0
 #ovs-ofctl add-flow br0 "in_port=1, actions=NORMAL"
-ovs-ofctl add-flow br0 "in_port=afxdp-p1, actions=output:afxdp-p0"
-ovs-ofctl add-flow br0 "in_port=afxdp-p0, actions=output:afxdp-p1"
+#ovs-ofctl add-flow br0 "in_port=afxdp-p1, actions=output:afxdp-p0"
+#ovs-ofctl add-flow br0 "in_port=afxdp-p0, actions=output:afxdp-p1"
 #ovs-ofctl add-flow br0 "in_port=afxdp-p1, actions=output:afxdp-p0"
 ovs-ofctl dump-flows br0
 ovs-ofctl dump-ports-desc br0
