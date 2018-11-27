@@ -42,7 +42,7 @@ $1";/netdev_linux.*obtaining netdev stats via vport failed/d
 
 m4_define([ADD_VETH_AFXDP],
     [ AT_CHECK([ip link add $1 type veth peer name ovs-$1 || return 77])
-      CONFIGURE_VETH_OFFLOADS([$1])
+      CONFIGURE_AFXDP_VETH_OFFLOADS([$1])
       AT_CHECK([ip link set $1 netns $2])
       AT_CHECK([ip link set dev ovs-$1 up])
       AT_CHECK([ovs-vsctl add-port $3 ovs-$1 -- \
@@ -59,6 +59,15 @@ m4_define([ADD_VETH_AFXDP],
     ]
 )
 
+# CONFIGURE_AFXDP_VETH_OFFLOADS([VETH])
+#
+# Disable TX offloads and VLAN offloads for veths used in AF_XDP.
+m4_define([CONFIGURE_AFXDP_VETH_OFFLOADS],
+    [AT_CHECK([ethtool -K $1 tx off], [0], [ignore], [ignore])
+     AT_CHECK([ethtool -K $1 rxvlan off], [0], [ignore], [ignore])
+     AT_CHECK([ethtool -K $1 txvlan off], [0], [ignore], [ignore])
+    ]
+)
 
 # CONFIGURE_VETH_OFFLOADS([VETH])
 #
