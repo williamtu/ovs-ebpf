@@ -326,7 +326,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/lldp/lldpd-structs.h \
 	lib/xdpsock.c \
 	lib/xdpsock.h \
-	lib/netdev-afxdp.c
+	lib/netdev-afxdp.c \
+	lib/netdev-afxdp.h
 
 if WIN32
 lib_libopenvswitch_la_SOURCES += \

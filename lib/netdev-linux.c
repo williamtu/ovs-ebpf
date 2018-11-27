@@ -75,6 +75,7 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
+#include "netdev-afxdp.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -1082,24 +1083,11 @@ netdev_linux_destruct(struct netdev *netdev_)
     }
 
     if (is_afxdp_netdev(netdev_)) {
-xsk_destroy();
-/*
-    
         int ifindex;
-        struct netdev_linux *netdev = netdev_linux_cast(netdev_);
-
+        
         get_ifindex(netdev_, &ifindex);
-#ifdef HUGETLB
-        munmap(netdev->xsk[0]->umem->frames, NUM_FRAMES * FRAME_SIZE);
-#else
-        free(netdev->xsk[0]->umem->frames);
-#endif
-        umem_pool_cleanup(&netdev->xsk[0]->umem->mpool);
-        xpacket_pool_cleanup(&netdev->xsk[0]->umem->xpool);
-
-        close(netdev->xsk[0]->sfd);
-        VLOG_INFO("destruct afxdp device, ifindex = %d", ifindex);
-*/
+        VLOG_DBG("destruct afxdp device, ifindex = %d", ifindex);
+        xsk_destroy(netdev->xsk[0]);
     }
 
     ovs_mutex_destroy(&netdev->mutex);
@@ -1119,8 +1107,6 @@ netdev_linux_rxq_alloc(void)
     return &rx->up;
 }
 
-struct xdpsock *xsk_configure(struct xdp_umem *umem,
-                              int ifindex, int xdp_queue_id);
 static int
 netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
 {
@@ -1134,14 +1120,10 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     if (rx->is_tap) {
         rx->fd = netdev->tap_fd;
     } else if (is_afxdp_netdev(netdev_)) {
-        // setup AF_XDP socket here, see xsk_configure
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
+        int xdp_queue_id = 0;
         struct xdpsock *xsk;
-        //int xdp_queue_id = 1; // FIXME
-        int xdp_queue_id = 0; // FIXME
-        int key = 0;
-        int xsk_fd;
 
         if (setrlimit(RLIMIT_MEMLOCK, &r)) {
             VLOG_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
@@ -1161,9 +1143,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         xsk = xsk_configure(NULL, ifindex, xdp_queue_id);
 
         netdev->xsk[num_socks++] = xsk;
-        rx->fd = xsk->sfd; //for upper layer to poll
-        xsk_fd = xsk->sfd;
-
+        rx->fd = xsk->sfd; /* for netdev layer to poll */
     } else {
         struct sockaddr_ll sll;
         int ifindex, val;
@@ -1369,7 +1349,7 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 {
     struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
     struct netdev *netdev = rx->up.netdev;
-    struct dp_packet *buffer;
+    struct dp_packet *buffer = NULL;
     ssize_t retval;
     int mtu;
     struct netdev_linux *netdev_ = netdev_linux_cast(netdev);
@@ -1401,9 +1381,10 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     } else if (is_afxdp_netdev(netdev)) {
         dp_packet_batch_init_packet_fields(batch);
 
+        if (batch->count != 0)
+            VLOG_DBG("%s AFXDP recv %lu packets", __func__, batch->count);
+
         return retval;
-//if (batch->count != 0)
-// VLOG_INFO("%s AFXDP recv %lu packets", __func__, batch->count);
     } else {
         dp_packet_batch_init_packet(batch, buffer);
     }

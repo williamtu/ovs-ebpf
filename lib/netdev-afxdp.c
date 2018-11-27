@@ -77,8 +77,11 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
+#include "lib/xdpsock.h"
+#include "netdev-afxdp.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_afxdp);
+
 #ifndef SOL_XDP
 #define SOL_XDP 283
 #endif
@@ -88,20 +91,16 @@ VLOG_DEFINE_THIS_MODULE(netdev_afxdp);
 #ifndef PF_XDP
 #define PF_XDP AF_XDP
 #endif
-#define DEBUG_HEXDUMP 0
 
-#include "lib/xdpsock.h"
 
 #define AFXDP_MODE XDP_FLAGS_SKB_MODE // DRV_MODE or SKB_MODE 
-//#define DEBUG
-#define MAX_SOCKS 4
-
 #define barrier() __asm__ __volatile__("": : :"memory")
 #define u_smp_rmb() barrier()
 #define u_smp_wmb() barrier()
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
 
+#define UMEM2DESC(elem, base) ((uint64_t)((char *)elem - (char *)base))
+#define UMEM2XPKT(base, i) \
+    (struct dp_packet_afxdp *)((char *)base + i * sizeof(struct dp_packet_afxdp)) 
 
 static uint32_t opt_xdp_flags; // now alwyas set to SKB_MODE at bpf_set_link_xdp_fd
 static uint32_t opt_xdp_bind_flags;
@@ -161,7 +160,7 @@ static inline int umem_fill_to_kernel(struct xdp_umem_uqueue *fq, uint64_t *d,
     uint32_t i;
 
     if (umem_nb_free(fq, nb) < nb) {
-        VLOG_ERR("%s error\n", __func__);
+        VLOG_ERR("%s Not enough free blocks\n", __func__);
         return -ENOSPC;
     }
 
@@ -221,32 +220,14 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     void *bufs;
     int i;
 
-    umem = calloc(1, sizeof(*umem));
-    ovs_assert(umem);
+    umem = xcalloc(1, sizeof(*umem));
 
-
-    VLOG_DBG("enter: %s \n", __func__);
-
-//#define HUGETLB
-#define ADDR (void *)(0x0UL)
-#define FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB)
-#define PROTECTION (PROT_READ | PROT_WRITE)
-
-#ifdef HUGETLB
-// mount -t hugetlbfs nodev /mnt
-// echo 4 > /proc/sys/vm/nr_hugepages
-    bufs = mmap(ADDR, NUM_FRAMES * FRAME_SIZE, PROTECTION, FLAGS, -1, 0);
-    if (bufs == MAP_FAILED) {
-        VLOG_FATAL("mmap hugetlb fails %s", ovs_strerror(errno)); 
-    }
-#else
     ovs_assert(posix_memalign(&bufs, getpagesize(), /* PAGE_SIZE aligned */
-                   NUM_FRAMES * FRAME_SIZE) == 0);
-#endif
-    VLOG_INFO("%s shared umem from %p to %p", __func__,
+                              NUM_FRAMES * FRAME_SIZE) == 0);
+    VLOG_DBG("%s shared umem from %p to %p", __func__,
               bufs, (char*)bufs + NUM_FRAMES * FRAME_SIZE);
 
-    mr.addr = (__uint64_t)bufs;
+    mr.addr = (uint64_t)bufs;
     mr.len = NUM_FRAMES * FRAME_SIZE;
     mr.chunk_size = FRAME_SIZE;
     mr.headroom = FRAME_HEADROOM;
@@ -262,10 +243,10 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
                &optlen) == 0);
 
     umem->fq.map = mmap(0, off.fr.desc +
-                FQ_NUM_DESCS * sizeof(uint64_t),
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED | MAP_POPULATE, sfd,
-                XDP_UMEM_PGOFF_FILL_RING);
+                        FQ_NUM_DESCS * sizeof(uint64_t),
+                        PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_POPULATE, sfd,
+                        XDP_UMEM_PGOFF_FILL_RING);
     ovs_assert(umem->fq.map != MAP_FAILED);
 
     umem->fq.mask = FQ_NUM_DESCS - 1;
@@ -276,10 +257,10 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
     umem->fq.cached_cons = FQ_NUM_DESCS;
 
     umem->cq.map = mmap(0, off.cr.desc +
-                 CQ_NUM_DESCS * sizeof(uint64_t),
-                 PROT_READ | PROT_WRITE,
-                 MAP_SHARED | MAP_POPULATE, sfd,
-                 XDP_UMEM_PGOFF_COMPLETION_RING);
+                        CQ_NUM_DESCS * sizeof(uint64_t),
+                        PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_POPULATE, sfd,
+                        XDP_UMEM_PGOFF_COMPLETION_RING);
     ovs_assert(umem->cq.map != MAP_FAILED);
 
     umem->cq.mask = CQ_NUM_DESCS - 1;
@@ -290,58 +271,63 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
     umem->frames = bufs;
     umem->fd = sfd;
-    ovs_assert(!umem_pool_init(&umem->mpool, NUM_FRAMES));
 
-    // initialize the umem->frame
+    /* UMEM pool init */
+    umem_pool_init(&umem->mpool, NUM_FRAMES);
+
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         umem_elem_push(&umem->mpool, elem); 
-        VLOG_INFO("umem push %p counter %d", elem, umem_elem_count(&umem->mpool));
+
+        VLOG_DBG("umem push %p counter %d",
+                 elem, umem_elem_count(&umem->mpool));
     }
 
+    /* AF_XDP metadata init */
     xpacket_pool_init(&umem->xpool, NUM_FRAMES);
-    VLOG_INFO("%s xpacket pool from %p to %p", __func__,
-              umem->xpool.array,
-              (char *)umem->xpool.array + NUM_FRAMES * sizeof(struct dp_packet_afxdp));
 
-    VLOG_INFO("xpacket init done");
-    // initialize the dp_packet array
+    VLOG_DBG("%s xpacket pool from %p to %p", __func__,
+             umem->xpool.array,
+             (char *)umem->xpool.array + NUM_FRAMES * sizeof(struct dp_packet_afxdp));
+
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
         struct dp_packet_afxdp *xpacket;
         struct dp_packet *packet;
         char *base;
 
-        xpacket = (char *)umem->xpool.array + i * sizeof(struct dp_packet_afxdp);
+        xpacket = UMEM2XPKT(umem->xpool.array, i);
         xpacket->mpool = &umem->mpool;
 
-        VLOG_INFO("xpacket %p", xpacket);
         packet = &xpacket->packet;
         packet->source = DPBUF_AFXDP;
 
         base = (char *)umem->frames + i * FRAME_SIZE;
         dp_packet_use(packet, base, FRAME_SIZE);
         packet->source = DPBUF_AFXDP;
-//        dp_packet_set_rss_hash(packet, 0x17802c29);
+        //dp_packet_set_rss_hash(packet, 0x17802c29);
     }
-//    VLOG_INFO("umem_elem umem %p head %p 1st %p", umem, &umem->head, umem->head.next);
-
-#if 0
-    if (opt_bench == BENCH_TXONLY) {
-        int i;
-
-        for (i = 0; i < NUM_FRAMES; i++)
-            (void)gen_eth_frame(&umem->frames[i][0]);
-    }
-#endif
     return umem;
 }
 
 void
-xsk_destroy()
+xsk_destroy(struct xdpsock *xsk)
 {
-	return;
+#ifdef AFXDP_HUGETLB
+    munmap(xsk->umem->frames, NUM_FRAMES * FRAME_SIZE);
+#else
+    free(xsk->umem->frames);
+#endif
+
+    /* cleanup umem pool */
+    umem_pool_cleanup(&xsk->umem->mpool);
+
+    /* cleanup metadata */
+    xpacket_pool_cleanup(&xsk->umem->xpool);
+
+    close(xsk->sfd);
+    return;
 }
 
 struct xdpsock *
@@ -357,7 +343,6 @@ xsk_configure(struct xdp_umem *umem,
     uint64_t i;
 
     opt_xdp_flags |= AFXDP_MODE;
-    //opt_xdp_bind_flags |= XDP_ZEROCOPY;
     opt_xdp_bind_flags |= XDP_COPY;
     opt_xdp_bind_flags |= XDP_ATTACH;
 
@@ -369,9 +354,8 @@ xsk_configure(struct xdp_umem *umem,
 
     xsk->sfd = sfd;
     xsk->outstanding_tx = 0;
-
-    VLOG_DBG("enter: %s xsk fd %d", __func__, sfd);
-
+    
+    VLOG_DBG("%s xsk fd %d", __func__, sfd);
     if (!umem) {
         shared = false;
         xsk->umem = xdp_umem_configure(sfd);
@@ -388,34 +372,27 @@ xsk_configure(struct xdp_umem *umem,
     ovs_assert(getsockopt(sfd, SOL_XDP, XDP_MMAP_OFFSETS, &off,
                &optlen) == 0);
 
-    /* Rx */
+    /* Confiugre RX ring */
     xsk->rx.map = mmap(NULL,
-               off.rx.desc +
-               NUM_DESCS * sizeof(struct xdp_desc),
-               PROT_READ | PROT_WRITE,
-               MAP_SHARED | MAP_POPULATE, sfd,
-               XDP_PGOFF_RX_RING);
+                       off.rx.desc +
+                       NUM_DESCS * sizeof(struct xdp_desc),
+                       PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_POPULATE, sfd,
+                       XDP_PGOFF_RX_RING);
     ovs_assert(xsk->rx.map != MAP_FAILED);
 
-/*
-    if (!shared) {
-        for (i = 0; i < NUM_DESCS * FRAME_SIZE; i += FRAME_SIZE)
-            ovs_assert(umem_fill_to_kernel(&xsk->umem->fq, &i, 1)
-                == 0);
-    }
-*/
-
+    /* Populate the FILL ring */
     for (i = 0; i < NUM_DESCS; i++) {
         struct umem_elem *elem;
         uint64_t desc[1]; 
 
         elem = umem_elem_pop(&xsk->umem->mpool);
-        desc[0] = (uint64_t)((char *)elem - xsk->umem->frames);
-        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->mpool));
+        desc[0] = UMEM2DESC(elem, xsk->umem->frames);
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
+        
+        VLOG_INFO("pop %p and fill in fq, counter %d", elem, umem_elem_count(&xsk->umem->mpool));
     }
 
-    // FIXME: we also configure tx here
     /* Tx */
     xsk->tx.map = mmap(NULL,
                off.tx.desc +
@@ -499,10 +476,10 @@ static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
 static void kick_tx(int fd)
 {
     int ret;
+
+#if AF_XDP_POLL
     struct pollfd fds[1];
     int timeout;
-
-#if 0
     fds[0].fd = fd;
     fds[0].events = POLLOUT;
     timeout = 1000; /* 1ns */
@@ -519,49 +496,8 @@ static void kick_tx(int fd)
     }
 }
 
-static inline void complete_tx_l2fwd(struct xdpsock *xsk)
-{
-    uint64_t descs[BATCH_SIZE];
-    unsigned int rcvd;
-    size_t ndescs;
-
-    if (!xsk->outstanding_tx)
-        return;
-
-    kick_tx(xsk->sfd);
-    ndescs = (xsk->outstanding_tx > BATCH_SIZE) ? BATCH_SIZE :
-         xsk->outstanding_tx;
-
-    /* re-add completed Tx buffers */
-    rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, ndescs);
-
-    if (rcvd > 0) {
-        umem_fill_to_kernel(&xsk->umem->fq, descs, rcvd);
-        xsk->outstanding_tx -= rcvd;
-        xsk->tx_npkts += rcvd;
-    }
-}
-
-static inline void complete_tx_only(struct xdpsock *xsk)
-{
-    uint64_t descs[BATCH_SIZE];
-    unsigned int rcvd;
-
-    if (!xsk->outstanding_tx) {
-        VLOG_DBG("no outstanding_tx");
-        return;
-    }
-
-    kick_tx(xsk->sfd);
-
-    rcvd = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
-    if (rcvd > 0) {
-            xsk->outstanding_tx -= rcvd;
-            xsk->tx_npkts += rcvd;
-    }
-}
-
-static inline uint32_t xq_nb_free(struct xdp_uqueue *q, uint32_t ndescs)
+static inline uint32_t
+xq_nb_free(struct xdp_uqueue *q, uint32_t ndescs)
 {
     uint32_t free_entries = q->cached_cons - q->cached_prod;
 
@@ -598,7 +534,6 @@ static inline int xq_enq(struct xdp_uqueue *uq,
 
 static inline void
 print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
-#ifdef DEBUG
     struct xdp_statistics stat;
     socklen_t optlen;
 
@@ -606,11 +541,9 @@ print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
     ovs_assert(getsockopt(xsk->sfd, SOL_XDP, XDP_STATISTICS,
                 &stat, &optlen) == 0);
 
-    VLOG_INFO("rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
+    VLOG_DBG("rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
              stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
-#else
     return;
-#endif
 }
 
 /* Receive packet from AF_XDP socket */
@@ -641,7 +574,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
 
         index = (descs[i].addr - FRAME_HEADROOM) / FRAME_SIZE;
 
-        xpacket = (char *)xsk->umem->xpool.array + index * sizeof(struct dp_packet_afxdp);
+        xpacket = UMEM2XPKT(xsk->umem->xpool.array, index);
 #ifdef DEBUG
         VLOG_WARN("rcvd %d base %p xpacket %p index %d", rcvd, base, xpacket, index);
         vlog_hex_dump(base, 14);
@@ -667,8 +600,8 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
     xsk->rx_npkts += rcvd;
 
     for (i = 0; i < rcvd; i++) {
+        struct xdp_desc fill_desc[1];
         struct umem_elem *elem;
-        struct xdp_desc descs[1];
         int retry_cnt = 0;
 retry:
         elem = umem_elem_pop(&xsk->umem->mpool);
@@ -679,7 +612,7 @@ retry:
             goto retry;
         }
         descs[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
-        umem_fill_to_kernel_ex(&xsk->umem->fq, descs, 1);
+        umem_fill_to_kernel_ex(&xsk->umem->fq, fill_desc, 1);
     }
 
 //    print_xsk_stat(xsk);
@@ -737,7 +670,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
             VLOG_ERR("no available elem!");
             OVS_NOT_REACHED();
         }
-//      VLOG_INFO("elem %p", elem);
 
         memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
 
@@ -761,10 +693,9 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     *uq->producer = uq->cached_prod;
     xsk->outstanding_tx += batch->count;
 
-//    complete_tx_only(xsk);
     uint64_t descs[BATCH_SIZE];
     unsigned int rcvd = 0, total_tx = 0;
-    int i, gap;
+    int i;
 
 retry:
     kick_tx(xsk->sfd);
@@ -787,8 +718,6 @@ retry:
                   elem, umem_elem_count(&xsk->umem->mpool));
 #endif
     }
-
-    gap = batch->count - total_tx; 
 
     if (total_tx < batch->count && xsk->outstanding_tx > (CQ_NUM_DESCS/2)) {
         goto retry;

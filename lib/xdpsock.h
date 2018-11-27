@@ -83,9 +83,9 @@ struct umem_elem {
 
 /* array-based stack */
 struct umem_pool {
-    int index; /* top */
+    int index;      /* point to top */
     unsigned int size;
-    struct ovs_mutex lock;
+    struct ovs_mutex mutex;
     void **array;
 };
 
@@ -107,8 +107,7 @@ struct xdp_umem_uqueue {
 };
 
 struct xdp_umem {
-    //struct umem_elem_head head; /* a list to keep free frame */
-    struct umem_pool mpool; /* a list to keep free frame */
+    struct umem_pool mpool;     /* a free list/array */
     struct xpacket_pool xpool;
     char *frames;
     struct xdp_umem_uqueue fq; 

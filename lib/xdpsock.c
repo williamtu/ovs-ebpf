@@ -31,48 +31,6 @@
 #include "openvswitch/compiler.h"
 #include "dp-packet.h"
 
-#define ovs_mutex_lock(x)
-#define ovs_mutex_unlock(x)
-#if 0
-void
-umem_elem_push(struct umem_elem_head *head,
-               struct umem_elem *elem)
-{
-    struct umem_elem *next;
-
-    ovs_mutex_lock(&head->mutex);
-    next = head->next;
-    head->next = elem;
-    elem->next = next;
-    head->n++;
-    ovs_mutex_unlock(&head->mutex);
-}
-
-struct umem_elem *
-umem_elem_pop(struct umem_elem_head *head)
-{
-    struct umem_elem *next, *new_head;
-
-    ovs_mutex_lock(&head->mutex);
-    next = head->next;
-    if (!next) {
-        ovs_mutex_unlock(&head->mutex);
-        return NULL;
-    }
-    new_head = next->next;
-    head->next = new_head;
-    head->n--;
-    ovs_mutex_unlock(&head->mutex);
-    return next;
-}
-
-unsigned int
-umem_elem_count(struct umem_elem_head *head)
-{
-    return head->n;
-}
-
-#else
 void
 __umem_elem_push_n(struct umem_pool *umemp, void **addrs, int n)
 {
@@ -166,7 +124,7 @@ umem_pool_init(struct umem_pool *umemp, unsigned int size)
 
     umemp->size = size;
     umemp->index = 0;
-    ovs_mutex_init(&umemp->lock);
+    ovs_mutex_init(&umemp->mutex);
     return 0;
 }
 
@@ -176,13 +134,14 @@ umem_pool_cleanup(struct umem_pool *umemp)
     free(umemp->array);
 }
 
+/* AF_XDP metadata init/destroy */
 int
 xpacket_pool_init(struct xpacket_pool *xp, unsigned int size)
 {
     void *bufs;
 
     ovs_assert(posix_memalign(&bufs, getpagesize(),
-                   size * sizeof(struct dp_packet_afxdp)) == 0);
+                              size * sizeof(struct dp_packet_afxdp)) == 0);
 
     xp->array = bufs;
     xp->size = size;
@@ -194,4 +153,3 @@ xpacket_pool_cleanup(struct xpacket_pool *xp)
 {
     free(xp->array);
 }
-#endif
