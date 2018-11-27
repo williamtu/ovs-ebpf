@@ -23,4 +23,4 @@ ip link del ovs-p1
 ip link del afxdp-p0
 ip link del afxdp-p1
 ip link set dev enp2s0 xdp off
-umount /sys/fs/bpf
+#umount /sys/fs/bpf
