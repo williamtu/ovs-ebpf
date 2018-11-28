@@ -100,7 +100,7 @@ VLOG_DEFINE_THIS_MODULE(netdev_afxdp);
 #define UMEM2XPKT(base, i) \
     (struct dp_packet_afxdp *)((char *)base + i * sizeof(struct dp_packet_afxdp))
 
-#define AFXDP_MODE XDP_FLAGS_SKB_MODE // DRV_MODE or SKB_MODE 
+#define AFXDP_MODE XDP_FLAGS_SKB_MODE /* DRV_MODE or SKB_MODE */
 static uint32_t opt_xdp_flags;
 static uint32_t opt_xdp_bind_flags;
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
@@ -124,7 +124,6 @@ static inline uint32_t umem_nb_free(struct xdp_umem_uqueue *q, uint32_t nb)
     if (free_entries >= nb)
         return free_entries;
 
-    /* Refresh the local tail pointer */
     q->cached_cons = (*q->consumer + q->size) & q->mask;
 
     return q->cached_cons - q->cached_prod;
@@ -305,7 +304,6 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         base = (char *)umem->frames + i * FRAME_SIZE;
         dp_packet_use(packet, base, FRAME_SIZE);
         packet->source = DPBUF_AFXDP;
-        //dp_packet_set_rss_hash(packet, 0x17802c29);
     }
     return umem;
 }
@@ -481,6 +479,7 @@ static void kick_tx(int fd)
     fds[0].events = POLLOUT;
     timeout = 1000; /* 1ns */
 
+    /* this is slower due to syscall */
     ret = poll(fds, 1, timeout);
     if (ret < 0)
         return;
@@ -489,7 +488,7 @@ static void kick_tx(int fd)
     if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
         return;
     } else {
-        VLOG_WARN("sendto fails %s", ovs_strerror(errno));
+        VLOG_WARN_RL(&rl, "sendto fails %s", ovs_strerror(errno));
     }
 }
 
@@ -538,8 +537,8 @@ print_xsk_stat(struct xdpsock *xsk OVS_UNUSED) {
     ovs_assert(getsockopt(xsk->sfd, SOL_XDP, XDP_STATISTICS,
                 &stat, &optlen) == 0);
 
-    VLOG_DBG("rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
-             stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
+    VLOG_DBG_RL(&rl, "rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
+                stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
     return;
 }
 
@@ -576,8 +575,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         xpacket->mpool = &xsk->umem->mpool;
 
         if (packet->source != DPBUF_AFXDP) {
-            non_afxdp++;
-            VLOG_WARN("XXX FIXME");
+            non_afxdp++; /* FIXME: might be a bug */
             continue;
         }
 
@@ -599,7 +597,7 @@ retry:
         elem = umem_elem_pop(&xsk->umem->mpool);
         if (!elem && retry_cnt < 10) {
             retry_cnt++;
-            VLOG_WARN("retry refilling the fill queue");
+            VLOG_WARN_RL(&rl, "retry refilling the fill queue");
             xsleep(1);
             goto retry;
         }
@@ -639,12 +637,11 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         struct dp_packet_afxdp *xpacket;
 
         uint32_t idx = uq->cached_prod++ & uq->mask;
-#ifdef AVOID_TXCOPY
+#ifdef AFXDP_AOID_TXCOPY
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
 
             if (xpacket->mpool == &xsk->umem->mpool) {
-                // avoid the copy by resuing the umem_elem
                 r[idx].addr = (uint64_t)((char *)dp_packet_base(packet) - xsk->umem->frames);
                 r[idx].len = dp_packet_size(packet);
                 xpacket->mpool = NULL;

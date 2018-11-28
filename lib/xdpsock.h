@@ -1,3 +1,19 @@
+/*
+ * Copyright (c) 2018 Nicira, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #ifndef XDPSOCK_H
 #define XDPSOCK_H 1
 
@@ -33,14 +49,12 @@
 #define FRAME_SIZE 2048
 #define BATCH_SIZE NETDEV_MAX_BURST 
 
-//#define DEBUG
-#ifdef DEBUG
+#ifdef AFXDP_DEBUG
 #define NUM_FRAMES 128
 #define NUM_DESCS 64
 #define FQ_NUM_DESCS 64
 #define CQ_NUM_DESCS 64
 #else
-//#define NUM_FRAMES 131072
 #define NUM_FRAMES 10240
 #define NUM_DESCS 256
 #define FQ_NUM_DESCS 256
