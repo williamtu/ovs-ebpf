@@ -47,7 +47,7 @@
 #define FRAME_HEADROOM 256
 #define FRAME_SHIFT 11
 #define FRAME_SIZE 2048
-#define BATCH_SIZE NETDEV_MAX_BURST 
+#define BATCH_SIZE NETDEV_MAX_BURST
 
 #ifdef AFXDP_DEBUG
 #define NUM_FRAMES 128
@@ -58,7 +58,7 @@
 #define NUM_FRAMES 10240
 #define NUM_DESCS 256
 #define FQ_NUM_DESCS 256
-#define CQ_NUM_DESCS 256 
+#define CQ_NUM_DESCS 256
 #endif
 
 struct xdp_uqueue {
@@ -123,9 +123,9 @@ struct xdp_umem {
     struct umem_pool mpool;     /* a free list/array */
     struct xpacket_pool xpool;
     char *frames;
-    struct xdp_umem_uqueue fq; 
-    struct xdp_umem_uqueue cq; 
-    int fd; 
+    struct xdp_umem_uqueue fq;
+    struct xdp_umem_uqueue cq;
+    int fd;
 };
 
 void __umem_elem_push(struct umem_pool *umemp, void *addr);

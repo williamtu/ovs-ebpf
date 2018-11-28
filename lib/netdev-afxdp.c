@@ -279,7 +279,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
-        umem_elem_push(&umem->mpool, elem); 
+        umem_elem_push(&umem->mpool, elem);
     }
 
     /* AF_XDP metadata init */
@@ -351,7 +351,7 @@ xsk_configure(struct xdp_umem *umem,
 
     xsk->sfd = sfd;
     xsk->outstanding_tx = 0;
-    
+
     VLOG_DBG("%s xsk fd %d", __func__, sfd);
     if (!umem) {
         shared = false;
@@ -381,7 +381,7 @@ xsk_configure(struct xdp_umem *umem,
     /* Populate the FILL ring */
     for (i = 0; i < NUM_DESCS; i++) {
         struct umem_elem *elem;
-        uint64_t desc[1]; 
+        uint64_t desc[1];
 
         elem = umem_elem_pop(&xsk->umem->mpool);
         desc[0] = UMEM2DESC(elem, xsk->umem->frames);
@@ -425,7 +425,6 @@ xsk_configure(struct xdp_umem *umem,
     if (bind(sfd, (struct sockaddr *)&sxdp, sizeof(sxdp))) {
         VLOG_FATAL("afxdp bind failed (%s)", ovs_strerror(errno));
     }
-    
 
     return xsk;
 }
