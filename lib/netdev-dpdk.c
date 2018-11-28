@@ -24,7 +24,6 @@
 #include <unistd.h>
 #include <linux/virtio_net.h>
 #include <sys/socket.h>
-#include <linux/if.h>
 
 #include <rte_bus_pci.h>
 #include <rte_config.h>
