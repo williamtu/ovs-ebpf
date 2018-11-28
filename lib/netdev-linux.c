@@ -33,7 +33,6 @@
 #include <linux/mii.h>
 #include <linux/rtnetlink.h>
 #include <linux/sockios.h>
-#include <linux/if_xdp.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/utsname.h>
@@ -525,7 +524,7 @@ struct netdev_linux {
 
     /* LAG information. */
     bool is_lag_master;         /* True if the netdev is a LAG master. */
-    struct xdpsock *xsk[16];    /* af_xdp socket: each queue has one xdp sock */
+    struct xdpsock *xsk[1];     /* af_xdp socket: use only one queue */
 };
 
 struct netdev_rxq_linux {
@@ -1083,10 +1082,6 @@ netdev_linux_destruct(struct netdev *netdev_)
     }
 
     if (is_afxdp_netdev(netdev_)) {
-        int ifindex;
-        
-        get_ifindex(netdev_, &ifindex);
-        VLOG_DBG("destruct afxdp device, ifindex = %d", ifindex);
         xsk_destroy(netdev->xsk[0]);
     }
 
@@ -1131,7 +1126,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
             ovs_assert(0);
         }
 
-        VLOG_INFO("%s: %s: queue=%d configuring xdp sock",
+        VLOG_DBG("%s: %s: queue=%d configuring xdp sock",
                   __func__, netdev_->name, xdp_queue_id);
 
         /* Get ethernet device index. */
@@ -1141,7 +1136,6 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         }
 
         xsk = xsk_configure(NULL, ifindex, xdp_queue_id);
-
         netdev->xsk[num_socks++] = xsk;
         rx->fd = xsk->sfd; /* for netdev layer to poll */
     } else {
@@ -1354,23 +1348,21 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     int mtu;
     struct netdev_linux *netdev_ = netdev_linux_cast(netdev);
 
-    if (!is_afxdp_netdev(netdev)) {
-        if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
-            mtu = ETH_PAYLOAD_MAX;
-        }
-
-        /* Assume Ethernet port. No need to set packet_type. */
-        buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
-                                           DP_NETDEV_HEADROOM);
-    }
-
     if (is_afxdp_netdev(netdev)) {
         return netdev_linux_rxq_xsk(netdev_->xsk[0], batch);
     }
- 
+
+    if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
+        mtu = ETH_PAYLOAD_MAX;
+    }
+
+    /* Assume Ethernet port. No need to set packet_type. */
+    buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
+                                           DP_NETDEV_HEADROOM);
+
     retval = (rx->is_tap
-              ? netdev_linux_rxq_recv_tap(rx->fd, buffer) :
-                netdev_linux_rxq_recv_sock(rx->fd, buffer));
+              ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
+              : netdev_linux_rxq_recv_sock(rx->fd, buffer));
 
     if (retval) {
         if (retval != EAGAIN && retval != EMSGSIZE) {
@@ -1549,15 +1541,9 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
     } else if (is_afxdp_netdev(netdev_)) {
         struct xdpsock *xsk;
         struct netdev_linux *netdev = netdev_linux_cast(netdev_);
- 
-        xsk = netdev->xsk[0]; // FIXME: always use queue 0
-        error = netdev_linux_afxdp_batch_send(xsk, batch);      
-        if (error == -EAGAIN) {
-            error = netdev_linux_afxdp_batch_send(xsk, batch);
-        } else if (error != 0) {
-            goto free_batch;
-        }
 
+        xsk = netdev->xsk[0];
+        error = netdev_linux_afxdp_batch_send(xsk, batch);
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
