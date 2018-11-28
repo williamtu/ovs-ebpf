@@ -262,7 +262,7 @@ AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
 ADD_NAMESPACES(at_ns0)
 
 dnl Set up underlay link from host into the namespace using veth pair.
-ADD_VETH(p0, at_ns0, br-underlay, "172.31.1.1/24")
+ADD_VETH_AFXDP(p0, at_ns0, br-underlay, "172.31.1.1/24")
 AT_CHECK([ip addr add dev br-underlay "172.31.1.100/24"])
 AT_CHECK([ip link set dev br-underlay up])
 
@@ -302,7 +302,7 @@ AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
 ADD_NAMESPACES(at_ns0)
 
 dnl Set up underlay link from host into the namespace using veth pair.
-ADD_VETH(p0, at_ns0, br-underlay, "172.31.1.1/24")
+ADD_VETH_AFXDP(p0, at_ns0, br-underlay, "172.31.1.1/24")
 AT_CHECK([ip addr add dev br-underlay "172.31.1.100/24"])
 AT_CHECK([ip link set dev br-underlay up])
 
@@ -342,7 +342,7 @@ AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
 ADD_NAMESPACES(at_ns0)
 
 dnl Set up underlay link from host into the namespace using veth pair.
-ADD_VETH(p0, at_ns0, br-underlay, "fc00:100::1/96", [], [], nodad)
+ADD_VETH_AFXDP(p0, at_ns0, br-underlay, "fc00:100::1/96", [], [], nodad)
 AT_CHECK([ip addr add dev br-underlay "fc00:100::100/96" nodad])
 AT_CHECK([ip link set dev br-underlay up])
 
@@ -385,7 +385,7 @@ AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
 ADD_NAMESPACES(at_ns0)
 
 dnl Set up underlay link from host into the namespace using veth pair.
-ADD_VETH(p0, at_ns0, br-underlay, "fc00:100::1/96", [], [], nodad)
+ADD_VETH_AFXDP(p0, at_ns0, br-underlay, "fc00:100::1/96", [], [], nodad)
 AT_CHECK([ip addr add dev br-underlay "fc00:100::100/96" nodad])
 AT_CHECK([ip link set dev br-underlay up])
 
@@ -428,7 +428,7 @@ AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
 ADD_NAMESPACES(at_ns0)
 
 dnl Set up underlay link from host into the namespace using veth pair.
-ADD_VETH(p0, at_ns0, br-underlay, "172.31.1.1/24")
+ADD_VETH_AFXDP(p0, at_ns0, br-underlay, "172.31.1.1/24")
 AT_CHECK([ip addr add dev br-underlay "172.31.1.100/24"])
 AT_CHECK([ip link set dev br-underlay up])
 
@@ -474,7 +474,7 @@ AT_CHECK([ovs-ofctl add-flow br-underlay "actions=normal"])
 ADD_NAMESPACES(at_ns0)
 
 dnl Set up underlay link from host into the namespace using veth pair.
-ADD_VETH(p0, at_ns0, br-underlay, "fc00::1/64", [], [], "nodad")
+ADD_VETH_AFXDP(p0, at_ns0, br-underlay, "fc00::1/64", [], [], "nodad")
 AT_CHECK([ip addr add dev br-underlay "fc00::100/64" nodad])
 AT_CHECK([ip link set dev br-underlay up])
 
@@ -515,8 +515,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 AT_CHECK([ovs-vsctl -- set interface ovs-p0 ofport_request=1 \
                     -- set interface ovs-p1 ofport_request=2])
@@ -547,8 +547,8 @@ OVS_TRAFFIC_VSWITCHD_START([_ADD_BR([br1])])
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br1, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br1, "10.1.1.2/24")
 
 AT_CHECK([ip link add patch0 type veth peer name patch1])
 on_exit 'ip link del patch0'
@@ -586,7 +586,7 @@ AT_CHECK([ovs-ofctl del-flows br0])
 
 dnl Create p0 and ovs-p0(1)
 ADD_NAMESPACES(at_ns0)
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
 NS_CHECK_EXEC([at_ns0], [ip link set dev p0 address e6:66:c1:11:11:11])
 NS_CHECK_EXEC([at_ns0], [arp -s 10.1.1.2 e6:66:c1:22:22:22])
 
@@ -698,8 +698,8 @@ AT_CHECK([ovs-appctl vlog/set dpif:dbg dpif_netdev:dbg ofproto_dpif_upcall:dbg])
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -742,8 +742,8 @@ AT_CHECK([ovs-appctl vlog/set dpif:dbg dpif_netdev:dbg ofproto_dpif_upcall:dbg])
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 AT_DATA([flows.txt], [dnl
 priority=1,action=drop
@@ -802,8 +802,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 AT_DATA([flows.txt], [dnl
 priority=1,action=drop
@@ -866,8 +866,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -907,8 +907,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -990,8 +990,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "fc00::1/96")
-ADD_VETH(p1, at_ns1, br0, "fc00::2/96")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "fc00::1/96")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "fc00::2/96")
 
 AT_DATA([flows.txt], [dnl
 
@@ -1039,10 +1039,10 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
-ADD_VETH(p2, at_ns2, br0, "10.1.1.3/24")
-ADD_VETH(p3, at_ns3, br0, "10.1.1.4/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p2, at_ns2, br0, "10.1.1.3/24")
+ADD_VETH_AFXDP(p3, at_ns3, br0, "10.1.1.4/24")
 
 dnl Allow any traffic from ns0->ns1, ns2->ns3.
 AT_DATA([flows.txt], [dnl
@@ -1080,10 +1080,10 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
-ADD_VETH(p2, at_ns2, br0, "10.1.1.3/24")
-ADD_VETH(p3, at_ns3, br0, "10.1.1.4/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p2, at_ns2, br0, "10.1.1.3/24")
+ADD_VETH_AFXDP(p3, at_ns3, br0, "10.1.1.4/24")
 
 dnl Pass traffic from ns0->ns1 without committing, but attempt to track in
 dnl the opposite direction. This should fail.
@@ -1123,10 +1123,10 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
-ADD_VETH(p2, at_ns2, br0, "10.1.1.3/24")
-ADD_VETH(p3, at_ns3, br0, "10.1.1.4/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p2, at_ns2, br0, "10.1.1.3/24")
+ADD_VETH_AFXDP(p3, at_ns3, br0, "10.1.1.4/24")
 
 dnl Allow any traffic from ns0->ns1. Allow return traffic, matching on zone.
 dnl For ns2->ns3, use a different zone and see that the match fails.
@@ -1171,10 +1171,10 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
-ADD_VETH(p2, at_ns2, br0, "10.1.1.3/24")
-ADD_VETH(p3, at_ns3, br0, "10.1.1.4/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p2, at_ns2, br0, "10.1.1.3/24")
+ADD_VETH_AFXDP(p3, at_ns3, br0, "10.1.1.4/24")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -1221,8 +1221,8 @@ OVS_TRAFFIC_VSWITCHD_START(
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br1, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br1, "10.1.1.2/24")
 
 dnl Allow any traffic from ns0->br1, allow established in reverse.
 AT_DATA([flows-br0.txt], [dnl
@@ -1262,8 +1262,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -1341,10 +1341,10 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
-ADD_VETH(p2, at_ns2, br0, "10.1.1.3/24")
-ADD_VETH(p3, at_ns3, br0, "10.1.1.4/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p2, at_ns2, br0, "10.1.1.3/24")
+ADD_VETH_AFXDP(p3, at_ns3, br0, "10.1.1.4/24")
 
 dnl Allow traffic between ns0<->ns1 using the ct_mark.
 dnl Check that different marks do not match for traffic between ns2<->ns3.
@@ -1387,8 +1387,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 dnl Allow traffic between ns0<->ns1 using the ct_mark. Return traffic should
 dnl cause an additional bit to be set in the connection (and be allowed).
@@ -1425,8 +1425,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -1462,8 +1462,8 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1)
 
-ADD_VETH(p0, at_ns0, br0, "fc00::1/96")
-ADD_VETH(p1, at_ns1, br0, "fc00::2/96")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "fc00::1/96")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "fc00::2/96")
 
 dnl Allow any traffic from ns0->ns1. Only allow nd, return traffic from ns1->ns0.
 AT_DATA([flows.txt], [dnl
@@ -1503,10 +1503,10 @@ OVS_TRAFFIC_VSWITCHD_START()
 
 ADD_NAMESPACES(at_ns0, at_ns1, at_ns2, at_ns3)
 
-ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
-ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
-ADD_VETH(p2, at_ns2, br0, "10.1.1.3/24")
-ADD_VETH(p3, at_ns3, br0, "10.1.1.4/24")
+ADD_VETH_AFXDP(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH_AFXDP(p1, at_ns1, br0, "10.1.1.2/24")
+ADD_VETH_AFXDP(p2, at_ns2, br0, "10.1.1.3/24")
+ADD_VETH_AFXDP(p3, at_ns3, br0, "10.1.1.4/24")
 
 dnl Allow any traffic from ns0->ns1, ns2->ns3.
 AT_DATA([flows.txt], [dnl
