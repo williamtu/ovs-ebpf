@@ -105,6 +105,74 @@ static uint32_t opt_xdp_flags;
 static uint32_t opt_xdp_bind_flags;
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
+void
+__umem_elem_push_n(struct umem_pool *umemp, void **addrs, int n)
+{
+    void *ptr;
+
+    if (OVS_UNLIKELY(umemp->index + n > umemp->size)) {
+        OVS_NOT_REACHED();
+    }
+
+    ptr = &umemp->array[umemp->index];
+    memcpy(ptr, addrs, n * sizeof(void *));
+    umemp->index += n;
+}
+
+inline void
+__umem_elem_push(struct umem_pool *umemp, void *addr)
+{
+    umemp->array[umemp->index++] = addr;
+}
+
+void
+umem_elem_push(struct umem_pool *umemp, void *addr)
+{
+
+    if (OVS_UNLIKELY(umemp->index >= umemp->size)) {
+        /* stack is full */
+        OVS_NOT_REACHED();
+    }
+
+    ovs_mutex_lock(&umemp->mutex);
+    __umem_elem_push(umemp, addr);
+    ovs_mutex_unlock(&umemp->mutex);
+}
+
+void
+__umem_elem_pop_n(struct umem_pool *umemp, void **addrs, int n)
+{
+    void *ptr;
+
+    umemp->index -= n;
+
+    if (OVS_UNLIKELY(umemp->index < 0)) {
+        OVS_NOT_REACHED();
+    }
+
+    ptr = &umemp->array[umemp->index];
+    memcpy(addrs, ptr, n * sizeof(void *));
+}
+
+inline void *
+__umem_elem_pop(struct umem_pool *umemp)
+{
+    return umemp->array[--umemp->index];
+}
+
+void *
+umem_elem_pop(struct umem_pool *umemp)
+{
+    void *ptr;
+
+    ovs_mutex_lock(&umemp->mutex);
+    ptr = __umem_elem_pop(umemp);
+    ovs_mutex_unlock(&umemp->mutex);
+
+    return ptr;
+}
+
+
 static inline uint32_t xq_nb_avail(struct xdp_uqueue *q, uint32_t ndescs)
 {
     uint32_t entries = q->cached_prod - q->cached_cons;
@@ -627,13 +695,17 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
         struct umem_elem *elem;
-        struct dp_packet_afxdp *xpacket;
+        volatile struct dp_packet_afxdp *xpacket;
 
         uint32_t idx = uq->cached_prod++ & uq->mask;
-#ifdef AFXDP_AOID_TXCOPY
+#define AFXDP_AVOID_TXCOPY
+#ifdef AFXDP_AVOID_TXCOPY
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
-
+            
+//            VLOG_WARN("xpacket->mpool %p ", xpacket->mpool);
+            if (xpacket->mpool == NULL)
+                continue; /* FIXME */
             if (xpacket->mpool == &xsk->umem->mpool) {
                 r[idx].addr = (uint64_t)((char *)dp_packet_base(packet) - xsk->umem->frames);
                 r[idx].len = dp_packet_size(packet);
@@ -666,7 +738,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     xsk->outstanding_tx += batch->count;
 
 retry:
-    kick_tx(xsk->sfd);
 
     tx_done = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
     if (tx_done > 0) {
@@ -684,7 +755,8 @@ retry:
     }
 
     if (total_tx < batch->count && xsk->outstanding_tx > (CQ_NUM_DESCS/2)) {
-        goto retry;
+        //goto retry;
+        kick_tx(xsk->sfd);
     }
 #ifdef ADXDP_DEBUG
     print_xsk_stat(xsk);
