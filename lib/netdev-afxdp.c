@@ -279,7 +279,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
-        umem_elem_push(&umem->mpool, elem);
+        __umem_elem_push(&umem->mpool, elem);
     }
 
     /* AF_XDP metadata init */
@@ -304,6 +304,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
         base = (char *)umem->frames + i * FRAME_SIZE;
         dp_packet_use(packet, base, FRAME_SIZE);
         packet->source = DPBUF_AFXDP;
+        dp_packet_set_rss_hash(packet, 0x17802c29);
     }
     return umem;
 }
@@ -383,7 +384,7 @@ xsk_configure(struct xdp_umem *umem,
         struct umem_elem *elem;
         uint64_t desc[1];
 
-        elem = umem_elem_pop(&xsk->umem->mpool);
+        elem = __umem_elem_pop(&xsk->umem->mpool);
         desc[0] = UMEM2DESC(elem, xsk->umem->frames);
         umem_fill_to_kernel(&xsk->umem->fq, desc, 1);
     }
@@ -589,7 +590,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         struct umem_elem *elem;
         int retry_cnt = 0;
 retry:
-        elem = umem_elem_pop(&xsk->umem->mpool);
+        elem = __umem_elem_pop(&xsk->umem->mpool);
         if (!elem && retry_cnt < 10) {
             retry_cnt++;
             xsleep(1);
@@ -641,7 +642,7 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
             }
         }
 #endif
-        elem = umem_elem_pop(&xsk->umem->mpool);
+        elem = __umem_elem_pop(&xsk->umem->mpool);
         if (!elem) {
             return -EAGAIN;
         }
@@ -654,7 +655,7 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
-            umem_elem_push(xpacket->mpool, dp_packet_base(packet));
+            __umem_elem_push(xpacket->mpool, dp_packet_base(packet));
             /* Avoid freeing it twice at dp_packet_uninit */
             xpacket->mpool = NULL;
         }
@@ -679,7 +680,7 @@ retry:
         struct umem_elem *elem;
 
         elem = (struct umem_elem *)(descs[j] + xsk->umem->frames);
-        umem_elem_push(&xsk->umem->mpool, elem);
+        __umem_elem_push(&xsk->umem->mpool, elem);
     }
 
     if (total_tx < batch->count && xsk->outstanding_tx > (CQ_NUM_DESCS/2)) {
