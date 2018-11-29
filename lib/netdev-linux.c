@@ -1117,7 +1117,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     } else if (is_afxdp_netdev(netdev_)) {
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
         int ifindex, num_socks = 0;
-        int xdp_queue_id = 0;
+        int xdp_queue_id = 1;
         struct xdpsock *xsk;
 
         if (setrlimit(RLIMIT_MEMLOCK, &r)) {
@@ -1372,9 +1372,6 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
         dp_packet_delete(buffer);
     } else if (is_afxdp_netdev(netdev)) {
         dp_packet_batch_init_packet_fields(batch);
-
-        if (batch->count != 0)
-            VLOG_DBG("%s AFXDP recv %lu packets", __func__, batch->count);
 
         return retval;
     } else {

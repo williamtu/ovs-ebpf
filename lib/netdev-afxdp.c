@@ -100,7 +100,7 @@ VLOG_DEFINE_THIS_MODULE(netdev_afxdp);
 #define UMEM2XPKT(base, i) \
     (struct dp_packet_afxdp *)((char *)base + i * sizeof(struct dp_packet_afxdp))
 
-#define AFXDP_MODE XDP_FLAGS_SKB_MODE /* DRV_MODE or SKB_MODE */
+#define AFXDP_MODE XDP_FLAGS_DRV_MODE /* DRV_MODE or SKB_MODE */
 static uint32_t opt_xdp_flags;
 static uint32_t opt_xdp_bind_flags;
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
@@ -340,7 +340,7 @@ xsk_configure(struct xdp_umem *umem,
     uint64_t i;
 
     opt_xdp_flags |= AFXDP_MODE;
-    opt_xdp_bind_flags |= XDP_COPY;
+    opt_xdp_bind_flags |= XDP_ZEROCOPY;
     opt_xdp_bind_flags |= XDP_ATTACH;
 
     sfd = socket(PF_XDP, SOCK_RAW, 0);
@@ -566,10 +566,6 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         index = (descs[i].addr - FRAME_HEADROOM) / FRAME_SIZE;
         xpacket = UMEM2XPKT(xsk->umem->xpool.array, index);
 
-        VLOG_DBG_RL(&rl, "rcvd %d base %p xpacket %p index %d",
-                    rcvd, base, xpacket, index);
-        vlog_hex_dump(base, 14);
-
         packet = &xpacket->packet;
         xpacket->mpool = &xsk->umem->mpool;
 
@@ -596,7 +592,6 @@ retry:
         elem = umem_elem_pop(&xsk->umem->mpool);
         if (!elem && retry_cnt < 10) {
             retry_cnt++;
-            VLOG_WARN_RL(&rl, "retry refilling the fill queue");
             xsleep(1);
             goto retry;
         }
@@ -626,8 +621,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     r = uq->ring;
 
     if (xq_nb_free(uq, ndescs) < ndescs) {
-        VLOG_WARN_RL(&rl, "no free desc, outstanding tx %d, free tx nb %d",
-                     xsk->outstanding_tx, xq_nb_free(uq, ndescs));
         return -EAGAIN;
     }
 
@@ -650,7 +643,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
 #endif
         elem = umem_elem_pop(&xsk->umem->mpool);
         if (!elem) {
-            VLOG_ERR_RL(&rl, "no available elem!");
             return -EAGAIN;
         }
 
@@ -680,7 +672,6 @@ retry:
             xsk->outstanding_tx -= tx_done;
             xsk->tx_npkts += tx_done;
             total_tx += tx_done;
-            VLOG_DBG_RL(&rl, "%s complete %d tx", __func__, tx_done);
     }
 
     /* Recycle back to the umem pool */
