@@ -204,7 +204,6 @@ static inline int umem_fill_to_kernel_ex(struct xdp_umem_uqueue *fq,
         uint32_t i;
 
         if (umem_nb_free(fq, nb) < nb)  {
-            VLOG_ERR("%s error\n", __func__);
             return -ENOSPC;
         }
 
@@ -227,7 +226,6 @@ static inline int umem_fill_to_kernel(struct xdp_umem_uqueue *fq, uint64_t *d,
     uint32_t i;
 
     if (umem_nb_free(fq, nb) < nb) {
-        VLOG_ERR("%s Not enough free blocks\n", __func__);
         return -ENOSPC;
     }
 
@@ -556,7 +554,7 @@ static void kick_tx(int fd)
     if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
         return;
     } else {
-        VLOG_WARN_RL(&rl, "sendto fails %s", ovs_strerror(errno));
+        //VLOG_WARN_RL(&rl, "sendto fails %s", ovs_strerror(errno));
     }
 }
 
@@ -720,7 +718,7 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         }
 
         memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
-        vlog_hex_dump(dp_packet_data(packet), 14);
+        //vlog_hex_dump(dp_packet_data(packet), 14);
 
         r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
         r[idx].len = dp_packet_size(packet);
@@ -754,7 +752,8 @@ retry:
         __umem_elem_push(&xsk->umem->mpool, elem);
     }
 
-    if (total_tx < batch->count && xsk->outstanding_tx > (CQ_NUM_DESCS/2)) {
+    if (total_tx < batch->count &&
+        xsk->outstanding_tx > (CQ_NUM_DESCS - 2*batch->count)) {
         //goto retry;
         kick_tx(xsk->sfd);
     }
