@@ -205,6 +205,19 @@ AC_DEFUN([OVS_CHECK_LINUX_TC], [
                [Define to 1 if TCA_PEDIT_KEY_EX_HDR_TYPE_UDP is avaiable.])])
 ])
 
+dnl OVS_CHECK_LINUX_AF_XDP
+dnl
+dnl Configure Linux AF_XDP compat.
+AC_DEFUN([OVS_CHECK_LINUX_AF_XDP],
+  [AC_CHECK_HEADER([linux/if_xdp.h],
+                   [HAVE_AF_XDP=yes],
+                   [HAVE_AF_XDP=no])
+   AM_CONDITIONAL([HAVE_AF_XDP], [test "$HAVE_AF_XDP" = yes])
+   if test "$HAVE_AF_XDP" = yes; then
+      AC_DEFINE([HAVE_AF_XDP], [1],
+                [Define to 1 if linux/if_xdp.h is available.])
+   fi])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree

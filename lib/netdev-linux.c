@@ -74,6 +74,7 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
+#include "netdev-afxdp.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -504,6 +505,7 @@ struct netdev_linux {
     int tap_fd;
     bool present;               /* If the device is present in the namespace */
     uint64_t tx_dropped;        /* tap device can drop if the iface is down */
+    struct xdpsock *xsk[1];     /* af_xdp socket: use only one queue */
 };
 
 struct netdev_rxq_linux {
@@ -550,6 +552,12 @@ static bool
 is_netdev_linux_class(const struct netdev_class *netdev_class)
 {
     return netdev_class->run == netdev_linux_run;
+}
+
+static bool
+is_afxdp_netdev(const struct netdev *netdev)
+{
+    return netdev_get_class(netdev) == &netdev_afxdp_class;
 }
 
 static bool
@@ -903,6 +911,10 @@ netdev_linux_destruct(struct netdev *netdev_)
         atomic_count_dec(&miimon_cnt);
     }
 
+    if (is_afxdp_netdev(netdev_)) {
+        xsk_destroy(netdev->xsk[0]);
+    }
+
     ovs_mutex_destroy(&netdev->mutex);
 }
 
@@ -932,6 +944,30 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     rx->is_tap = is_tap_netdev(netdev_);
     if (rx->is_tap) {
         rx->fd = netdev->tap_fd;
+    } else if (is_afxdp_netdev(netdev_)) {
+        struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
+        int ifindex, num_socks = 0;
+        int xdp_queue_id = 0;
+        struct xdpsock *xsk;
+
+        if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+            VLOG_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
+                      ovs_strerror(errno));
+            ovs_assert(0);
+        }
+
+        VLOG_DBG("%s: %s: queue=%d configuring xdp sock",
+                  __func__, netdev_->name, xdp_queue_id);
+
+        /* Get ethernet device index. */
+        error = get_ifindex(&netdev->up, &ifindex);
+        if (error) {
+            goto error;
+        }
+
+        xsk = xsk_configure(NULL, ifindex, xdp_queue_id);
+        netdev->xsk[num_socks++] = xsk;
+        rx->fd = xsk->sfd; /* for netdev layer to poll */
     } else {
         struct sockaddr_ll sll;
         int ifindex, val;
@@ -1136,9 +1172,14 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
 {
     struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
     struct netdev *netdev = rx->up.netdev;
-    struct dp_packet *buffer;
+    struct dp_packet *buffer = NULL;
     ssize_t retval;
     int mtu;
+    struct netdev_linux *netdev_ = netdev_linux_cast(netdev);
+
+    if (is_afxdp_netdev(netdev)) {
+        return netdev_linux_rxq_xsk(netdev_->xsk[0], batch);
+    }
 
     if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
         mtu = ETH_PAYLOAD_MAX;
@@ -1147,6 +1188,7 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
     /* Assume Ethernet port. No need to set packet_type. */
     buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
                                            DP_NETDEV_HEADROOM);
+
     retval = (rx->is_tap
               ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
               : netdev_linux_rxq_recv_sock(rx->fd, buffer));
@@ -1157,6 +1199,13 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch)
                          netdev_rxq_get_name(rxq_), ovs_strerror(errno));
         }
         dp_packet_delete(buffer);
+    } else if (is_afxdp_netdev(netdev)) {
+        dp_packet_batch_init_packet_fields(batch);
+
+        if (batch->count != 0)
+            VLOG_DBG("%s AFXDP recv %lu packets", __func__, batch->count);
+
+        return retval;
     } else {
         dp_packet_batch_init_packet(batch, buffer);
     }
@@ -1294,7 +1343,8 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
     int error = 0;
     int sock = 0;
 
-    if (!is_tap_netdev(netdev_)) {
+    if (!is_tap_netdev(netdev_) &&
+        !is_afxdp_netdev(netdev_)) {
         sock = af_packet_sock();
         if (sock < 0) {
             error = -sock;
@@ -1308,6 +1358,12 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
         }
 
         error = netdev_linux_sock_batch_send(sock, ifindex, batch);
+    } else if (is_afxdp_netdev(netdev_)) {
+        struct xdpsock *xsk;
+        struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+
+        xsk = netdev->xsk[0];
+        error = netdev_linux_afxdp_batch_send(xsk, batch);
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
@@ -2836,12 +2892,12 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     return error;
 }
 
-#define NETDEV_LINUX_CLASS(NAME, CONSTRUCT, GET_STATS,          \
+#define NETDEV_LINUX_CLASS(NAME, PMD, CONSTRUCT, GET_STATS,     \
                            GET_FEATURES, GET_STATUS,            \
                            FLOW_OFFLOAD_API)                    \
 {                                                               \
     NAME,                                                       \
-    false,                      /* is_pmd */                    \
+    PMD,                        /* is_pmd */                    \
                                                                 \
     NULL,                                                       \
     netdev_linux_run,                                           \
@@ -2916,6 +2972,7 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
 const struct netdev_class netdev_linux_class =
     NETDEV_LINUX_CLASS(
         "system",
+        false,
         netdev_linux_construct,
         netdev_linux_get_stats,
         netdev_linux_get_features,
@@ -2925,7 +2982,18 @@ const struct netdev_class netdev_linux_class =
 const struct netdev_class netdev_tap_class =
     NETDEV_LINUX_CLASS(
         "tap",
+        false,
         netdev_linux_construct_tap,
+        netdev_tap_get_stats,
+        netdev_linux_get_features,
+        netdev_linux_get_status,
+        NO_OFFLOAD_API);
+
+const struct netdev_class netdev_afxdp_class =
+    NETDEV_LINUX_CLASS(
+        "afxdp",
+        true,
+        netdev_linux_construct,
         netdev_tap_get_stats,
         netdev_linux_get_features,
         netdev_linux_get_status,
@@ -2934,6 +3002,7 @@ const struct netdev_class netdev_tap_class =
 const struct netdev_class netdev_internal_class =
     NETDEV_LINUX_CLASS(
         "internal",
+        false,
         netdev_linux_construct,
         netdev_internal_get_stats,
         NULL,                  /* get_features */
