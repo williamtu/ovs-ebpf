@@ -32,10 +32,10 @@ struct xdpsock *xsk_configure(struct xdp_umem *umem,
                               int ifindex, int xdp_queue_id);
 void xsk_destroy(struct xdpsock *xsk);
 
-int netdev_linux_rxq_xsk(struct xdpsock *xsk,
+static int netdev_linux_rxq_xsk(struct xdpsock *xsk,
                          struct dp_packet_batch *batch);
 
-int netdev_linux_afxdp_batch_send(struct xdpsock *xsk,
+static int netdev_linux_afxdp_batch_send(struct xdpsock *xsk,
                                   struct dp_packet_batch *batch);
 
 #endif /* netdev-afxdp.h */
