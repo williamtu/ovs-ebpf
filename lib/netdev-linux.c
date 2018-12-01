@@ -1066,13 +1066,13 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         packet = &xpacket->packet;
         xpacket->mpool = &xsk->umem->mpool;
 
-        if (packet->source != DPBUF_AFXDP) {
+        if (packet->source != DPBUF_AFXDP && packet->source != 0) {
             non_afxdp++; /* FIXME: might be a bug */
             continue;
         }
 
-        packet->source = DPBUF_AFXDP;
-        dp_packet_set_data(packet, base);
+//        packet->source = DPBUF_AFXDP;
+//        dp_packet_set_data(packet, base);
         dp_packet_set_size(packet, descs[i].len);
 
         /* add packet into batch, increase batch->count */
