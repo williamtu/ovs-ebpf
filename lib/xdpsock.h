@@ -43,7 +43,8 @@
 #include "ovs-atomic.h"
 #include "openvswitch/thread.h"
 
-#define FRAME_HEADROOM 256
+//#define FRAME_HEADROOM 256
+#define FRAME_HEADROOM 0
 #define FRAME_SHIFT 11
 #define FRAME_SIZE 2048
 #define BATCH_SIZE NETDEV_MAX_BURST
