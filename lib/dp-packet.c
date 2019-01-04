@@ -127,6 +127,7 @@ dp_packet_uninit(struct dp_packet *b)
             xpacket = dp_packet_cast_afxdp(b);
             if (xpacket->mpool)
                 __umem_elem_push(xpacket->mpool, dp_packet_base(b));
+            /* TODO: re-init the metadata array */
             return;
         }
     }

@@ -772,6 +772,8 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         elem = (struct umem_elem *)((char *)umem->frames + i * FRAME_SIZE);
         __umem_elem_push(&umem->mpool, elem);
+
+        VLOG_WARN("umem addr %p", elem);
     }
 
     /* AF_XDP metadata init */
@@ -795,8 +797,11 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 
         base = (char *)umem->frames + i * FRAME_SIZE;
         dp_packet_use(packet, base, FRAME_SIZE);
+        /* dp_packet_use sets source to DPBUF_MALLOC,
+         * so fix it to DPBUF_AFXDP
+         */
         packet->source = DPBUF_AFXDP;
-        dp_packet_set_rss_hash(packet, 0x17802c29);
+        dp_packet_set_data(packet, base + FRAME_HEADROOM);
     }
     return umem;
 }
@@ -983,8 +988,6 @@ static void kick_tx(int fd)
     ret = sendto(fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
     if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
         return;
-    } else {
-        VLOG_WARN_RL(&rl, "sendto fails %s", ovs_strerror(errno));
     }
 }
 
@@ -1063,6 +1066,7 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
         index = (descs[i].addr - FRAME_HEADROOM) / FRAME_SIZE;
         xpacket = UMEM2XPKT(xsk->umem->xpool.array, index);
 
+   //     VLOG_WARN("base %p\n", base);
         packet = &xpacket->packet;
         xpacket->mpool = &xsk->umem->mpool;
 
@@ -1070,9 +1074,26 @@ netdev_linux_rxq_xsk(struct xdpsock *xsk,
             non_afxdp++; /* FIXME: might be a bug */
             continue;
         }
-
+#if 1 //11Mpps
 //        packet->source = DPBUF_AFXDP;
 //        dp_packet_set_data(packet, base);
+#else
+        //packet->source = DPBUF_AFXDP; //19Mpps, correct!
+
+        if (packet->data_ofs != FRAME_HEADROOM)
+            VLOG_WARN("ofs %d", packet->data_ofs);
+
+//        if ((char *)base != (char *)packet->base_ + packet->data_ofs)
+            VLOG_WARN("base %p packet->base %p", base, packet->base_);
+
+//        dp_packet_set_data(packet, base); // drop to 11Mpps
+
+//        if (packet->data_ofs != FRAME_HEADROOM)
+//            VLOG_WARN_RL(&rl, "2 ofs %d", packet->data_ofs);
+
+        //VLOG_WARN_RL(&rl, "ofs %d", packet->data_ofs);
+#endif
+
         dp_packet_set_size(packet, descs[i].len);
 
         /* add packet into batch, increase batch->count */
@@ -1092,7 +1113,7 @@ retry:
             xsleep(1);
             goto retry;
         }
-        descs[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
+        fill_desc[0].addr = (uint64_t)((char *)elem - xsk->umem->frames);
         umem_fill_to_kernel_ex(&xsk->umem->fq, fill_desc, 1);
     }
 
@@ -1126,10 +1147,13 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         struct dp_packet_afxdp *xpacket;
 
         uint32_t idx = uq->cached_prod++ & uq->mask;
+#define AFXDP_AOID_TXCOPY
 #ifdef AFXDP_AOID_TXCOPY
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
 
+            if (xpacket->mpool == NULL)
+                continue;
             if (xpacket->mpool == &xsk->umem->mpool) {
                 r[idx].addr = (uint64_t)((char *)dp_packet_base(packet) - xsk->umem->frames);
                 r[idx].len = dp_packet_size(packet);
@@ -1144,7 +1168,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
         }
 
         memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
-        vlog_hex_dump(dp_packet_data(packet), 14);
 
         r[idx].addr = (uint64_t)((char *)elem - xsk->umem->frames);
         r[idx].len = dp_packet_size(packet);
@@ -1162,7 +1185,6 @@ netdev_linux_afxdp_batch_send(struct xdpsock *xsk, /* send to xdp socket! */
     xsk->outstanding_tx += batch->count;
 
 retry:
-    kick_tx(xsk->sfd);
 
     tx_done = umem_complete_from_kernel(&xsk->umem->cq, descs, BATCH_SIZE);
     if (tx_done > 0) {
@@ -1179,8 +1201,9 @@ retry:
         __umem_elem_push(&xsk->umem->mpool, elem);
     }
 
-    if (total_tx < batch->count && xsk->outstanding_tx > (CQ_NUM_DESCS/2)) {
-        goto retry;
+    if (total_tx < batch->count && xsk->outstanding_tx > CQ_NUM_DESCS - 64) {
+        kick_tx(xsk->sfd);
+        //goto retry;
     }
 #ifdef ADXDP_DEBUG
     print_xsk_stat(xsk);
