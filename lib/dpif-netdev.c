@@ -4607,7 +4607,7 @@ rxq_scheduling(struct dp_netdev *dp, bool pinned) OVS_REQUIRES(dp->port_mutex)
                 continue;
             }
             rxqs[i]->pmd = rr_numa_get_pmd(non_local_numa, assign_cyc);
-            VLOG_WARN("There's no available (non-isolated) pmd thread "
+            VLOG_INFO("There's no available (non-isolated) pmd thread "
                       "on numa node %d. Queue %d on port \'%s\' will "
                       "be assigned to the pmd on core %d "
                       "(numa node %d). Expect reduced performance.",
