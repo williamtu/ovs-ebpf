@@ -74,6 +74,7 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
+#include "netdev-afxdp.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -523,6 +524,7 @@ struct netdev_linux {
 
     /* LAG information. */
     bool is_lag_master;         /* True if the netdev is a LAG master. */
+    struct xsk_socket_info *xsk[1];     /* af_xdp socket: use only one queue */
 };
 
 struct netdev_rxq_linux {
@@ -569,6 +571,12 @@ static bool
 is_netdev_linux_class(const struct netdev_class *netdev_class)
 {
     return netdev_class->run == netdev_linux_run;
+}
+
+static bool
+is_afxdp_netdev(const struct netdev *netdev)
+{
+    return netdev_get_class(netdev) == &netdev_afxdp_class;
 }
 
 static bool
@@ -1073,6 +1081,18 @@ netdev_linux_destruct(struct netdev *netdev_)
         atomic_count_dec(&miimon_cnt);
     }
 
+    if (is_afxdp_netdev(netdev_)) {
+        int ifindex;
+        int ret;
+
+        ret = get_ifindex(netdev_, &ifindex);
+        if (ret) {
+            VLOG_ERR("get ifindex error");
+        } else {
+            xsk_destroy(netdev->xsk[0], ifindex);
+        }
+    }
+
     ovs_mutex_destroy(&netdev->mutex);
 }
 
@@ -1102,6 +1122,30 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     rx->is_tap = is_tap_netdev(netdev_);
     if (rx->is_tap) {
         rx->fd = netdev->tap_fd;
+    } else if (is_afxdp_netdev(netdev_)) {
+        struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
+        int ifindex, num_socks = 0;
+        int xdp_queue_id = 0;
+        struct xsk_socket_info *xsk;
+
+        if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+            VLOG_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
+                      ovs_strerror(errno));
+            ovs_assert(0);
+        }
+
+        VLOG_DBG("%s: %s: queue=%d configuring xdp sock",
+                  __func__, netdev_->name, xdp_queue_id);
+
+        /* Get ethernet device index. */
+        error = get_ifindex(&netdev->up, &ifindex);
+        if (error) {
+            goto error;
+        }
+
+        xsk = xsk_configure(ifindex, xdp_queue_id);
+        netdev->xsk[num_socks++] = xsk;
+        rx->fd = xsk_socket__fd(xsk->xsk); /* for netdev layer to poll */
     } else {
         struct sockaddr_ll sll;
         int ifindex, val;
@@ -1307,9 +1351,14 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 {
     struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
     struct netdev *netdev = rx->up.netdev;
-    struct dp_packet *buffer;
+    struct dp_packet *buffer = NULL;
     ssize_t retval;
     int mtu;
+    struct netdev_linux *netdev_ = netdev_linux_cast(netdev);
+
+    if (is_afxdp_netdev(netdev)) {
+        return netdev_linux_rxq_xsk(netdev_->xsk[0], batch);
+    }
 
     if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
         mtu = ETH_PAYLOAD_MAX;
@@ -1318,6 +1367,7 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     /* Assume Ethernet port. No need to set packet_type. */
     buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
                                            DP_NETDEV_HEADROOM);
+
     retval = (rx->is_tap
               ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
               : netdev_linux_rxq_recv_sock(rx->fd, buffer));
@@ -1328,6 +1378,13 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
                          netdev_rxq_get_name(rxq_), ovs_strerror(errno));
         }
         dp_packet_delete(buffer);
+    } else if (is_afxdp_netdev(netdev)) {
+        dp_packet_batch_init_packet_fields(batch);
+
+        if (batch->count != 0)
+            VLOG_DBG("%s AFXDP recv %lu packets", __func__, batch->count);
+
+        return retval;
     } else {
         dp_packet_batch_init_packet(batch, buffer);
     }
@@ -1469,7 +1526,8 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
     int error = 0;
     int sock = 0;
 
-    if (!is_tap_netdev(netdev_)) {
+    if (!is_tap_netdev(netdev_) &&
+        !is_afxdp_netdev(netdev_)) {
         if (netdev_linux_netnsid_is_remote(netdev_linux_cast(netdev_))) {
             error = EOPNOTSUPP;
             goto free_batch;
@@ -1488,6 +1546,10 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
         }
 
         error = netdev_linux_sock_batch_send(sock, ifindex, batch);
+    } else if (is_afxdp_netdev(netdev_)) {
+        struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+
+        error = netdev_linux_afxdp_batch_send(netdev->xsk[0], batch);
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
@@ -3205,6 +3267,7 @@ const struct netdev_class netdev_linux_class = {
     NETDEV_LINUX_CLASS_COMMON,
     LINUX_FLOW_OFFLOAD_API,
     .type = "system",
+    .is_pmd = false,
     .construct = netdev_linux_construct,
     .get_stats = netdev_linux_get_stats,
     .get_features = netdev_linux_get_features,
@@ -3215,6 +3278,7 @@ const struct netdev_class netdev_linux_class = {
 const struct netdev_class netdev_tap_class = {
     NETDEV_LINUX_CLASS_COMMON,
     .type = "tap",
+    .is_pmd = false,
     .construct = netdev_linux_construct_tap,
     .get_stats = netdev_tap_get_stats,
     .get_features = netdev_linux_get_features,
@@ -3224,9 +3288,19 @@ const struct netdev_class netdev_tap_class = {
 const struct netdev_class netdev_internal_class = {
     NETDEV_LINUX_CLASS_COMMON,
     .type = "internal",
+    .is_pmd = false,
     .construct = netdev_linux_construct,
     .get_stats = netdev_internal_get_stats,
     .get_status = netdev_internal_get_status,
+};
+
+const struct netdev_class netdev_afxdp_class = {
+    NETDEV_LINUX_CLASS_COMMON,
+    .type = "afxdp",
+    .is_pmd = true,
+    .construct = netdev_linux_construct,
+    .get_stats = netdev_linux_get_stats,
+    .get_status = netdev_linux_get_status,
 };
 
 
