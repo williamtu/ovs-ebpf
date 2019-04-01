@@ -205,6 +205,26 @@ AC_DEFUN([OVS_CHECK_LINUX_TC], [
                [Define to 1 if TCA_PEDIT_KEY_EX_HDR_TYPE_UDP is available.])])
 ])
 
+dnl OVS_CHECK_LINUX_AF_XDP
+dnl
+dnl Check both Linux kernel AF_XDP and libbpf support
+AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
+  AC_MSG_CHECKING([whether AF_XDP is supported])
+  AC_CHECK_HEADER([bpf/libbpf.h],
+                  [HAVE_LIBBPF=yes],
+                  [HAVE_LIBBPF==no])
+  AC_CHECK_HEADER([linux/if_xdp.h],
+                  [HAVE_IF_XDP=yes],
+                  [HAVE_IF_XDP=no])
+  AM_CONDITIONAL([SUPPORT_AF_XDP],
+                 [test "$HAVE_LIBBPF" = yes && test "$HAVE_IF_XDP" = yes])
+  AM_COND_IF([SUPPORT_AF_XDP], [
+    AC_DEFINE([HAVE_AF_XDP], [1], [Define to 1 if linux/if_xdp.h is available.])
+    LIBBPF_LDADD=" -lbpf -lelf"
+    AC_SUBST([LIBBPF_LDADD])
+  ])
+])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree
