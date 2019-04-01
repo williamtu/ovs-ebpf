@@ -10,6 +10,7 @@ DOC_SOURCE = \
 	Documentation/intro/why-ovs.rst \
 	Documentation/intro/install/index.rst \
 	Documentation/intro/install/bash-completion.rst \
+	Documentation/intro/install/bpf.rst \
 	Documentation/intro/install/debian.rst \
 	Documentation/intro/install/documentation.rst \
 	Documentation/intro/install/distributions.rst \
