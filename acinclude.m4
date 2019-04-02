@@ -210,16 +210,19 @@ dnl
 dnl Check both Linux kernel AF_XDP and libbpf support
 AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AC_MSG_CHECKING([whether AF_XDP is supported])
+  AC_ARG_ENABLE([afxdp],
+                [AC_HELP_STRING([--enable-afxdp], [Enable AF-XDP support])],
+                [], [enable_afxdp=no])
   AC_CHECK_HEADER([bpf/libbpf.h],
                   [HAVE_LIBBPF=yes],
-                  [HAVE_LIBBPF==no])
+                  [HAVE_LIBBPF=no])
   AC_CHECK_HEADER([linux/if_xdp.h],
                   [HAVE_IF_XDP=yes],
                   [HAVE_IF_XDP=no])
   AM_CONDITIONAL([SUPPORT_AF_XDP],
-                 [test "$HAVE_LIBBPF" = yes && test "$HAVE_IF_XDP" = yes])
+                 [test "$enable_afxdp" = yes && test "$HAVE_LIBBPF" = yes && test "$HAVE_IF_XDP" = yes])
   AM_COND_IF([SUPPORT_AF_XDP], [
-    AC_DEFINE([HAVE_AF_XDP], [1], [Define to 1 if linux/if_xdp.h is available.])
+    AC_DEFINE([HAVE_AF_XDP], [1], [Define to 1 if AF-XDP support is available and enabled.])
     LIBBPF_LDADD=" -lbpf -lelf"
     AC_SUBST([LIBBPF_LDADD])
   ])

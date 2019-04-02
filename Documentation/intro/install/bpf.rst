@@ -79,10 +79,7 @@ has to be configured with LIBBPF support.
 
 #. Configure the package::
 
-       $ ./configure
-
-   where ``LINUX_TOOLS`` is the path to the Linux tools/ directory that was
-   compiled in step 2.
+       $ ./configure --enable-afxdp
 
    .. note::
      Make sure the ldconfig is properly set-up to point to the libbpf.so
