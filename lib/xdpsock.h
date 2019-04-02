@@ -53,7 +53,7 @@
 #define smp_wmb() barrier()
 #include <bpf/xsk.h>
 
-#define FRAME_HEADROOM  0
+#define FRAME_HEADROOM  XDP_PACKET_HEADROOM
 #define FRAME_SIZE      XSK_UMEM__DEFAULT_FRAME_SIZE
 #define BATCH_SIZE      NETDEV_MAX_BURST
 #define FRAME_SHIFT     XSK_UMEM__DEFAULT_FRAME_SHIFT
@@ -68,11 +68,15 @@
 #define CONS_NUM_DESCS XSK_RING_CONS__DEFAULT_NUM_DESCS
 #endif
 
+typedef struct {
+    volatile int locked;
+} ovs_spinlock_t;
+
 /* LIFO ptr_array */
 struct umem_pool {
     int index;      /* point to top */
     unsigned int size;
-    struct ovs_mutex mutex;
+    ovs_spinlock_t mutex;
     void **array;   /* a pointer array */
 };
 
