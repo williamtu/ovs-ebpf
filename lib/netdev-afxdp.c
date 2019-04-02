@@ -94,8 +94,13 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 #define UMEM2XPKT(base, i) \
     (struct dp_packet_afxdp *)((char *)base + i * sizeof(struct dp_packet_afxdp))
 
+#ifdef AFXDP_NS_TEST /* test using make check-afxdp */
 static uint32_t opt_xdp_bind_flags = XDP_COPY;
 static uint32_t opt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
+#else
+static uint32_t opt_xdp_bind_flags = XDP_ZEROCOPY;
+static uint32_t opt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE;
+#endif
 static uint32_t prog_id;
 
 static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size)
@@ -295,8 +300,6 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
     uint32_t idx_rx = 0, idx_fq = 0;
     int ret = 0;
 
-    unsigned int non_afxdp;
-
     /* See if there is any packet on RX queue,
      * if yes, idx_rx is the index having the packet.
      */
@@ -321,15 +324,17 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
         packet = &xpacket->packet;
         xpacket->mpool = &xsk->umem->mpool;
 
-        vlog_hex_dump(pkt, 20);
         if (packet->source != DPBUF_AFXDP) {
             /* FIXME: might be a bug */
-            VLOG_WARN_RL(&rl, "invalid packet: %d", non_afxdp++);
             continue;
         }
 
         /* Initialize the struct dp_packet */
+#ifdef AFXDP_NS_TEST /* test using make check-afxdp */
         dp_packet_set_base(packet, pkt);
+#else
+        dp_packet_set_base(packet, pkt - FRAME_HEADROOM);
+#endif
         dp_packet_set_data(packet, pkt);
         dp_packet_set_size(packet, len);
 
@@ -366,7 +371,9 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
     xsk_ring_cons__release(&xsk->rx, rcvd);
     xsk->rx_npkts += rcvd;
 
+#ifdef AFXDP_NS_TEST
     print_xsk_stat(xsk);
+#endif
     return 0;
 }
 
@@ -377,7 +384,6 @@ static void kick_tx(struct xsk_socket_info *xsk)
     ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
     if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY)
         return;
-    VLOG_FATAL("kick tx failed (%s)", ovs_strerror(errno));
 }
 
 /*
@@ -406,7 +412,6 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
 
         elem = umem_elem_pop(&xsk->umem->mpool);
         if (!elem) {
-            VLOG_ERR_RL(&rl, "no available elem!");
             return -EAGAIN;
         }
 
@@ -416,8 +421,6 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
         xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->addr = index;
         xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->len
             = dp_packet_size(packet);
-
-        vlog_hex_dump(dp_packet_data(packet), 20);
 
         if (packet->source == DPBUF_AFXDP) {
             xpacket = dp_packet_cast_afxdp(packet);
@@ -437,7 +440,6 @@ retry:
     if (tx_done > 0) {
         xsk->outstanding_tx -= tx_done;
         xsk->tx_npkts += tx_done;
-        VLOG_DBG_RL(&rl, "%s complete %d tx", __func__, tx_done);
     }
 
     /* Recycle back to umem pool */
@@ -452,7 +454,7 @@ retry:
     }
     xsk_ring_cons__release(&xsk->umem->cq, tx_done);
 
-    if (xsk->outstanding_tx > PROD_NUM_DESCS / 2) {
+    if (xsk->outstanding_tx > PROD_NUM_DESCS - (PROD_NUM_DESCS >> 2)) {
         /* If there are still a lot not transmitted,
          * try harder.
          */
