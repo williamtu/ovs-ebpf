@@ -47,6 +47,37 @@
 #include "dp-packet.h"
 
 #ifdef HAVE_AF_XDP
+static inline void ovs_spinlock_init(ovs_spinlock_t *sl)
+{
+    sl->locked = 0;
+}
+
+static inline void ovs_spin_lock(ovs_spinlock_t *sl)
+{
+    int exp = 0;
+
+    while (!__atomic_compare_exchange_n(&sl->locked, &exp, 1, 0,
+                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        while (__atomic_load_n(&sl->locked, __ATOMIC_RELAXED)) {
+            ;
+        }
+        exp = 0;
+    }
+}
+
+static inline void ovs_spin_unlock(ovs_spinlock_t *sl)
+{
+    __atomic_store_n(&sl->locked, 0, __ATOMIC_RELEASE);
+}
+
+static inline int ovs_spin_trylock(ovs_spinlock_t *sl)
+{
+    int exp = 0;
+    return __atomic_compare_exchange_n(&sl->locked, &exp, 1,
+              0, /* disallow spurious failure */
+               __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+
 void
 __umem_elem_push_n(struct umem_pool *umemp OVS_UNUSED, void **addrs, int n)
 {
@@ -81,9 +112,9 @@ umem_elem_push(struct umem_pool *umemp OVS_UNUSED, void *addr)
 
     ovs_assert(((uint64_t)addr & FRAME_SHIFT_MASK) == 0);
 
-    ovs_mutex_lock(&umemp->mutex);
+    ovs_spin_lock(&umemp->mutex);
     __umem_elem_push(umemp, addr);
-    ovs_mutex_unlock(&umemp->mutex);
+    ovs_spin_unlock(&umemp->mutex);
 }
 
 void
@@ -112,9 +143,9 @@ umem_elem_pop(struct umem_pool *umemp OVS_UNUSED)
 {
     void *ptr;
 
-    ovs_mutex_lock(&umemp->mutex);
+    ovs_spin_lock(&umemp->mutex);
     ptr = __umem_elem_pop(umemp);
-    ovs_mutex_unlock(&umemp->mutex);
+    ovs_spin_unlock(&umemp->mutex);
 
     return ptr;
 }
@@ -145,7 +176,7 @@ umem_pool_init(struct umem_pool *umemp OVS_UNUSED, unsigned int size)
 
     umemp->size = size;
     umemp->index = 0;
-    ovs_mutex_init(&umemp->mutex);
+    ovs_spinlock_init(&umemp->mutex);
     return 0;
 }
 
