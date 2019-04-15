@@ -117,7 +117,9 @@ static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size)
                            NULL);
 
     if (ret) {
-        VLOG_FATAL("xsk umem create failed (%s)", ovs_strerror(errno));
+        VLOG_FATAL("xsk umem create failed (%s) mode: %s",
+            ovs_strerror(errno),
+            opt_xdp_bind_flags == XDP_COPY ? "SKB": "DRV");
     }
 
     umem->buffer = buffer;
@@ -168,7 +170,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
 
     xsk = calloc(1, sizeof(*xsk));
     if (!xsk) {
-        VLOG_FATAL("xsk create failed (%s)", ovs_strerror(errno));
+        VLOG_FATAL("xsk calloc failed (%s)", ovs_strerror(errno));
     }
 
     xsk->umem = umem;
@@ -186,7 +188,10 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     ret = xsk_socket__create(&xsk->xsk, devname, queue_id, umem->umem,
                              &xsk->rx, &xsk->tx, &cfg);
     if (ret) {
-        VLOG_FATAL("xsk create failed (%s)", ovs_strerror(errno));
+        VLOG_FATAL("xsk_socket_create failed (%s) mode: %s qid: %d",
+                   ovs_strerror(errno),
+                   opt_xdp_bind_flags == XDP_COPY ? "SKB": "DRV",
+                   queue_id);
     }
 
     /* make sure the XDP program is there */
