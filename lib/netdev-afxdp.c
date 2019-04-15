@@ -94,10 +94,9 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 #define UMEM2XPKT(base, i) \
     (struct dp_packet_afxdp *)((char *)base + i * sizeof(struct dp_packet_afxdp))
 
-#ifdef AFXDP_NS_TEST /* test using make check-afxdp */
 static uint32_t opt_xdp_bind_flags = XDP_COPY;
 static uint32_t opt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
-#else
+#if 0
 static uint32_t opt_xdp_bind_flags = XDP_ZEROCOPY;
 static uint32_t opt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE;
 #endif
@@ -287,6 +286,7 @@ int
 netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
                         char **errp OVS_UNUSED)
 {
+    const char *xdpmode;
     int new_n_rxq;
 
     /* TODO: add mutex lock */
@@ -304,6 +304,15 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
         netdev_request_reconfigure(netdev);
     }
 
+    xdpmode = smap_get(args, "xdpmode");
+    if (xdpmode && strncmp(xdpmode, "drv", 3) == 0) {
+        if (opt_xdp_bind_flags != XDP_ZEROCOPY) {
+            opt_xdp_bind_flags = XDP_ZEROCOPY;
+            opt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE;
+        }
+        VLOG_INFO("set AF_XDP device %s to ZC driver mode", netdev->name);
+    }
+
 out:
     return 0;
 }
@@ -313,6 +322,8 @@ netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args)
 {
     /* TODO: add mutex lock */
     smap_add_format(args, "n_rxq", "%d", netdev->n_rxq);
+    smap_add_format(args, "xdpmode", "%s",
+        opt_xdp_bind_flags == XDP_ZEROCOPY ? "drv" : "skb");
 
     return 0;
 }
@@ -386,11 +397,12 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
         }
 
         /* Initialize the struct dp_packet */
-#ifdef AFXDP_NS_TEST /* test using make check-afxdp */
-        dp_packet_set_base(packet, pkt);
-#else
-        dp_packet_set_base(packet, pkt - FRAME_HEADROOM);
-#endif
+        if (opt_xdp_bind_flags == XDP_ZEROCOPY) {
+            dp_packet_set_base(packet, pkt - FRAME_HEADROOM);
+        } else {
+            /* SKB mode */
+            dp_packet_set_base(packet, pkt);
+        }
         dp_packet_set_data(packet, pkt);
         dp_packet_set_size(packet, len);
 
@@ -427,7 +439,7 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
     xsk_ring_cons__release(&xsk->rx, rcvd);
     xsk->rx_npkts += rcvd;
 
-#ifdef AFXDP_NS_TEST
+#ifdef AFXDP_DEBUG
     print_xsk_stat(xsk);
 #endif
     return 0;
