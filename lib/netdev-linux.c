@@ -524,7 +524,7 @@ struct netdev_linux {
 
     /* LAG information. */
     bool is_lag_master;         /* True if the netdev is a LAG master. */
-    struct xsk_socket_info *xsk[1];     /* af_xdp socket: use only one queue */
+    struct xsk_socket_info *xsk[MAX_XSKQ]; /* af_xdp socket */
 };
 
 struct netdev_rxq_linux {
@@ -585,7 +585,7 @@ is_tap_netdev(const struct netdev *netdev)
     return netdev_get_class(netdev) == &netdev_tap_class;
 }
 
-static struct netdev_linux *
+struct netdev_linux *
 netdev_linux_cast(const struct netdev *netdev)
 {
     ovs_assert(is_netdev_linux_class(netdev_get_class(netdev)));
@@ -1083,13 +1083,16 @@ netdev_linux_destruct(struct netdev *netdev_)
 
     if (is_afxdp_netdev(netdev_)) {
         int ifindex;
-        int ret;
+        int ret, i;
 
         ret = get_ifindex(netdev_, &ifindex);
         if (ret) {
             VLOG_ERR("get ifindex error");
         } else {
-            xsk_destroy(netdev->xsk[0], ifindex);
+            for (i = 0; i < MAX_XSKQ; i++) {
+                xsk_destroy(netdev->xsk[i]);
+            }
+            xsk_remove_xdp_program(ifindex);
         }
     }
 
@@ -1124,8 +1127,8 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         rx->fd = netdev->tap_fd;
     } else if (is_afxdp_netdev(netdev_)) {
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
-        int ifindex, num_socks = 0;
-        int xdp_queue_id = 0;
+        int ifindex;
+        int xdp_queue_id = rxq_->queue_id;
         struct xsk_socket_info *xsk;
 
         if (setrlimit(RLIMIT_MEMLOCK, &r)) {
@@ -1144,7 +1147,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
         }
 
         xsk = xsk_configure(ifindex, xdp_queue_id);
-        netdev->xsk[num_socks++] = xsk;
+        netdev->xsk[xdp_queue_id] = xsk;
         rx->fd = xsk_socket__fd(xsk->xsk); /* for netdev layer to poll */
     } else {
         struct sockaddr_ll sll;
@@ -1357,7 +1360,9 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     struct netdev_linux *netdev_ = netdev_linux_cast(netdev);
 
     if (is_afxdp_netdev(netdev)) {
-        return netdev_linux_rxq_xsk(netdev_->xsk[0], batch);
+        int qid = rxq_->queue_id;
+
+        return netdev_linux_rxq_xsk(netdev_->xsk[qid], batch);
     }
 
     if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
@@ -1378,13 +1383,6 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
                          netdev_rxq_get_name(rxq_), ovs_strerror(errno));
         }
         dp_packet_delete(buffer);
-    } else if (is_afxdp_netdev(netdev)) {
-        dp_packet_batch_init_packet_fields(batch);
-
-        if (batch->count != 0)
-            VLOG_DBG("%s AFXDP recv %lu packets", __func__, batch->count);
-
-        return retval;
     } else {
         dp_packet_batch_init_packet(batch, buffer);
     }
@@ -1519,7 +1517,7 @@ netdev_linux_tap_batch_send(struct netdev *netdev_,
  * The kernel maintains a packet transmission queue, so the caller is not
  * expected to do additional queuing of packets. */
 static int
-netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
+netdev_linux_send(struct netdev *netdev_, int qid,
                   struct dp_packet_batch *batch,
                   bool concurrent_txq OVS_UNUSED)
 {
@@ -1549,7 +1547,7 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
     } else if (is_afxdp_netdev(netdev_)) {
         struct netdev_linux *netdev = netdev_linux_cast(netdev_);
 
-        error = netdev_linux_afxdp_batch_send(netdev->xsk[0], batch);
+        error = netdev_linux_afxdp_batch_send(netdev->xsk[qid], batch);
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
@@ -3301,6 +3299,9 @@ const struct netdev_class netdev_afxdp_class = {
     .construct = netdev_linux_construct,
     .get_stats = netdev_linux_get_stats,
     .get_status = netdev_linux_get_status,
+    .set_config = netdev_afxdp_set_config,
+    .get_config = netdev_afxdp_get_config,
+    .get_numa_id = netdev_afxdp_get_numa_id,
 };
 
 

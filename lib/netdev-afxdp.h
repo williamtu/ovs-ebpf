@@ -22,18 +22,25 @@
 
 /* These functions are Linux AF_XDP specific, so they should be used directly
  * only by Linux-specific code. */
+#define MAX_XSKQ 16
 struct netdev;
 struct xsk_socket_info;
 struct xdp_umem;
 struct dp_packet_batch;
 
 struct xsk_socket_info *xsk_configure(int ifindex, int xdp_queue_id);
-void xsk_destroy(struct xsk_socket_info *xsk, uint32_t ifindex);
+void xsk_destroy(struct xsk_socket_info *xsk);
 
 int netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
                          struct dp_packet_batch *batch);
 
 int netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
                                   struct dp_packet_batch *batch);
+
+void xsk_remove_xdp_program(uint32_t ifindex);
+int netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
+                            char **errp);
+int netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args);
+int netdev_afxdp_get_numa_id(const struct netdev *netdev);
 
 #endif /* netdev-afxdp.h */

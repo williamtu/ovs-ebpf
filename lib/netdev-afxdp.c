@@ -248,11 +248,15 @@ static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
 }
 
 void
-xsk_destroy(struct xsk_socket_info *xsk, uint32_t ifindex)
+xsk_destroy(struct xsk_socket_info *xsk)
 {
-    struct xsk_umem *umem = xsk->umem->umem;
-    uint32_t curr_prog_id = 0;
+    struct xsk_umem *umem;
 
+    if (!xsk) {
+        return;
+    }
+
+    umem = xsk->umem->umem;
     xsk_socket__delete(xsk->xsk);
     (void)xsk_umem__delete(umem);
 
@@ -261,18 +265,6 @@ xsk_destroy(struct xsk_socket_info *xsk, uint32_t ifindex)
 
     /* cleanup metadata pool */
     xpacket_pool_cleanup(&xsk->umem->xpool);
-
-    /* remove_xdp_program() */
-    if (bpf_get_link_xdp_id(ifindex, &curr_prog_id, opt_xdp_flags)) {
-        bpf_set_link_xdp_fd(ifindex, -1, opt_xdp_flags);
-    }
-    if (prog_id == curr_prog_id) {
-        bpf_set_link_xdp_fd(ifindex, -1, opt_xdp_flags);
-    } else if (!curr_prog_id) {
-        VLOG_WARN("couldn't find a prog id on a given interface");
-    } else {
-        VLOG_WARN("program on interface changed, not removing");
-    }
 
     return;
 }
@@ -288,6 +280,70 @@ print_xsk_stat(struct xsk_socket_info *xsk OVS_UNUSED) {
 
     VLOG_DBG_RL(&rl, "rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
                 stat.rx_dropped, stat.rx_invalid_descs, stat.tx_invalid_descs);
+    return;
+}
+
+int
+netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
+                        char **errp OVS_UNUSED)
+{
+    int new_n_rxq;
+
+    /* TODO: add mutex lock */
+    new_n_rxq = MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
+
+    if (netdev->n_rxq != new_n_rxq) {
+
+        if (new_n_rxq > MAX_XSKQ) {
+            VLOG_WARN("set n_rxq %d too large", new_n_rxq);
+            goto out;
+        }
+
+        netdev->n_rxq = new_n_rxq;
+        VLOG_INFO("set AF_XDP device %s to %d n_rxq", netdev->name, new_n_rxq);
+        netdev_request_reconfigure(netdev);
+    }
+
+out:
+    return 0;
+}
+
+int
+netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args)
+{
+    /* TODO: add mutex lock */
+    smap_add_format(args, "n_rxq", "%d", netdev->n_rxq);
+
+    return 0;
+}
+
+int
+netdev_afxdp_get_numa_id(const struct netdev *netdev)
+{
+    /* FIXME: Get netdev's PCIe device ID, then find
+     * its NUMA node id.
+     */
+    VLOG_INFO("FIXME: Device %s always use numa id 0", netdev->name);
+    return 0;
+}
+
+void
+xsk_remove_xdp_program(uint32_t ifindex)
+{
+    uint32_t curr_prog_id = 0;
+
+    /* remove_xdp_program() */
+    if (bpf_get_link_xdp_id(ifindex, &curr_prog_id, opt_xdp_flags)) {
+        bpf_set_link_xdp_fd(ifindex, -1, opt_xdp_flags);
+    }
+    if (prog_id == curr_prog_id) {
+        bpf_set_link_xdp_fd(ifindex, -1, opt_xdp_flags);
+    } else if (!curr_prog_id) {
+        VLOG_WARN("couldn't find a prog id on a given interface");
+    } else {
+        VLOG_WARN("program on interface changed, not removing");
+    }
+
     return;
 }
 
@@ -472,7 +528,7 @@ xsk_configure(int ifindex OVS_UNUSED, int xdp_queue_id OVS_UNUSED)
 }
 
 void
-xsk_destroy(struct xsk_socket_info *xsk OVS_UNUSED, uint32_t ifindex OVS_UNUSED)
+xsk_destroy(struct xsk_socket_info *xsk OVS_UNUSED)
 {
     return;
 }
@@ -487,6 +543,25 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk OVS_UNUSED,
 int
 netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk OVS_UNUSED,
                               struct dp_packet_batch *batch OVS_UNUSED)
+{
+    return 0;
+}
+
+int
+netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
+                        char **errp);
+{
+    return 0;
+}
+
+int
+netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args)
+{
+    return 0;
+}
+
+int
+netdev_afxdp_get_numa_id(const struct netdev *netdev)
 {
     return 0;
 }
