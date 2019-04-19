@@ -25,6 +25,10 @@
 #include <rte_mbuf.h>
 #endif
 
+#ifdef HAVE_AF_XDP
+#include "netdev-afxdp.h"
+#endif
+
 #include "netdev-dpdk.h"
 #include "openvswitch/list.h"
 #include "packets.h"
@@ -42,6 +46,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
+    DPBUF_AFXDP,               /* buffer data from XDP frame */
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
@@ -88,6 +93,13 @@ struct dp_packet {
         uint64_t data[DP_PACKET_CONTEXT_SIZE / 8];
     };
 };
+
+#if HAVE_AF_XDP
+struct dp_packet_afxdp {
+    struct umem_pool *mpool;
+    struct dp_packet packet;
+};
+#endif
 
 static inline void *dp_packet_data(const struct dp_packet *);
 static inline void dp_packet_set_data(struct dp_packet *, void *);
@@ -184,6 +196,12 @@ dp_packet_delete(struct dp_packet *b)
             return;
         }
 
+#ifdef HAVE_AF_XDP
+        if (b->source == DPBUF_AFXDP) {
+            free_afxdp_buf((struct dp_packet *)b);
+            return;
+        }
+#endif
         dp_packet_uninit(b);
         free(b);
     }

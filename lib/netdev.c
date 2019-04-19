@@ -146,6 +146,9 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_internal_class);
         netdev_register_provider(&netdev_tap_class);
         netdev_vport_tunnel_register();
+#ifdef HAVE_AF_XDP
+        netdev_register_provider(&netdev_afxdp_class);
+#endif
 #endif
 #if defined(__FreeBSD__) || defined(__NetBSD__)
         netdev_register_provider(&netdev_tap_class);
