@@ -22,6 +22,9 @@
 #include "netdev-dpdk.h"
 #include "openvswitch/dynamic-string.h"
 #include "util.h"
+#ifdef HAVE_AF_XDP
+#include "netdev-afxdp.h"
+#endif
 
 static void
 dp_packet_init__(struct dp_packet *b, size_t allocated, enum dp_packet_source source)
@@ -58,6 +61,27 @@ dp_packet_use(struct dp_packet *b, void *base, size_t allocated)
 {
     dp_packet_use__(b, base, allocated, DPBUF_MALLOC);
 }
+
+#if HAVE_AF_XDP
+/* Initialize 'b' as an empty dp_packet that contains
+ * memory starting at AF_XDP umem base.
+ */
+void
+dp_packet_use_afxdp(struct dp_packet *b, void *base, size_t allocated)
+{
+    dp_packet_set_base(b, base);
+    dp_packet_set_data(b, base);
+    dp_packet_set_size(b, 0);
+
+    dp_packet_set_allocated(b, allocated);
+    b->source = DPBUF_AFXDP;
+    dp_packet_reset_offsets(b);
+    pkt_metadata_init(&b->md, 0);
+    dp_packet_reset_cutlen(b);
+    dp_packet_reset_offload(b);
+    b->packet_type = htonl(PT_ETH);
+}
+#endif
 
 /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes of
  * memory starting at 'base'.  'base' should point to a buffer on the stack.
@@ -122,6 +146,11 @@ dp_packet_uninit(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
 #endif
+        } else if (b->source == DPBUF_AFXDP) {
+#ifdef HAVE_AF_XDP
+            free_afxdp_buf(b);
+#endif
+            return;
         }
     }
 }
@@ -246,6 +275,9 @@ dp_packet_resize__(struct dp_packet *b, size_t new_headroom, size_t new_tailroom
         break;
 
     case DPBUF_STACK:
+        OVS_NOT_REACHED();
+
+    case DPBUF_AFXDP:
         OVS_NOT_REACHED();
 
     case DPBUF_STUB:
@@ -433,6 +465,7 @@ dp_packet_steal_data(struct dp_packet *b)
 {
     void *p;
     ovs_assert(b->source != DPBUF_DPDK);
+    ovs_assert(b->source != DPBUF_AFXDP);
 
     if (b->source == DPBUF_MALLOC && dp_packet_data(b) == dp_packet_base(b)) {
         p = dp_packet_data(b);

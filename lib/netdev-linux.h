@@ -19,6 +19,20 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <linux/filter.h>
+#include <linux/gen_stats.h>
+#include <linux/if_ether.h>
+#include <linux/if_tun.h>
+#include <linux/types.h>
+#include <linux/ethtool.h>
+#include <linux/mii.h>
+
+#include "netdev-provider.h"
+#include "netdev-tc-offloads.h"
+#include "netdev-vport.h"
+#include "openvswitch/thread.h"
+#include "ovs-atomic.h"
+#include "timer.h"
 
 /* These functions are Linux specific, so they should be used directly only by
  * Linux-specific code. */

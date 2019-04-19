@@ -17,6 +17,7 @@
 #include <config.h>
 
 #include "netdev-linux.h"
+#include "netdev-linux-private.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -54,6 +55,7 @@
 #include "fatal-signal.h"
 #include "hash.h"
 #include "openvswitch/hmap.h"
+#include "netdev-afxdp.h"
 #include "netdev-provider.h"
 #include "netdev-tc-offloads.h"
 #include "netdev-vport.h"
@@ -487,51 +489,6 @@ static int tc_calc_cell_log(unsigned int mtu);
 static void tc_fill_rate(struct tc_ratespec *rate, uint64_t bps, int mtu);
 static int tc_calc_buffer(unsigned int Bps, int mtu, uint64_t burst_bytes);
 
-struct netdev_linux {
-    struct netdev up;
-
-    /* Protects all members below. */
-    struct ovs_mutex mutex;
-
-    unsigned int cache_valid;
-
-    bool miimon;                    /* Link status of last poll. */
-    long long int miimon_interval;  /* Miimon Poll rate. Disabled if <= 0. */
-    struct timer miimon_timer;
-
-    int netnsid;                    /* Network namespace ID. */
-    /* The following are figured out "on demand" only.  They are only valid
-     * when the corresponding VALID_* bit in 'cache_valid' is set. */
-    int ifindex;
-    struct eth_addr etheraddr;
-    int mtu;
-    unsigned int ifi_flags;
-    long long int carrier_resets;
-    uint32_t kbits_rate;        /* Policing data. */
-    uint32_t kbits_burst;
-    int vport_stats_error;      /* Cached error code from vport_get_stats().
-                                   0 or an errno value. */
-    int netdev_mtu_error;       /* Cached error code from SIOCGIFMTU or SIOCSIFMTU. */
-    int ether_addr_error;       /* Cached error code from set/get etheraddr. */
-    int netdev_policing_error;  /* Cached error code from set policing. */
-    int get_features_error;     /* Cached error code from ETHTOOL_GSET. */
-    int get_ifindex_error;      /* Cached error code from SIOCGIFINDEX. */
-
-    enum netdev_features current;    /* Cached from ETHTOOL_GSET. */
-    enum netdev_features advertised; /* Cached from ETHTOOL_GSET. */
-    enum netdev_features supported;  /* Cached from ETHTOOL_GSET. */
-
-    struct ethtool_drvinfo drvinfo;  /* Cached from ETHTOOL_GDRVINFO. */
-    struct tc *tc;
-
-    /* For devices of class netdev_tap_class only. */
-    int tap_fd;
-    bool present;               /* If the device is present in the namespace */
-    uint64_t tx_dropped;        /* tap device can drop if the iface is down */
-
-    /* LAG information. */
-    bool is_lag_master;         /* True if the netdev is a LAG master. */
-};
 
 struct netdev_rxq_linux {
     struct netdev_rxq up;
@@ -579,18 +536,23 @@ is_netdev_linux_class(const struct netdev_class *netdev_class)
     return netdev_class->run == netdev_linux_run;
 }
 
+#if HAVE_AF_XDP
+static bool
+is_afxdp_netdev(const struct netdev *netdev)
+{
+    return netdev_get_class(netdev) == &netdev_afxdp_class;
+}
+#else
+static bool
+is_afxdp_netdev(const struct netdev *netdev OVS_UNUSED)
+{
+    return false;
+}
+#endif
 static bool
 is_tap_netdev(const struct netdev *netdev)
 {
     return netdev_get_class(netdev) == &netdev_tap_class;
-}
-
-static struct netdev_linux *
-netdev_linux_cast(const struct netdev *netdev)
-{
-    ovs_assert(is_netdev_linux_class(netdev_get_class(netdev)));
-
-    return CONTAINER_OF(netdev, struct netdev_linux, up);
 }
 
 static struct netdev_rxq_linux *
@@ -1084,6 +1046,11 @@ netdev_linux_destruct(struct netdev *netdev_)
         atomic_count_dec(&miimon_cnt);
     }
 
+#if HAVE_AF_XDP
+    if (is_afxdp_netdev(netdev_)) {
+        xsk_destroy_all(netdev_);
+    }
+#endif
     ovs_mutex_destroy(&netdev->mutex);
 }
 
@@ -1113,7 +1080,7 @@ netdev_linux_rxq_construct(struct netdev_rxq *rxq_)
     rx->is_tap = is_tap_netdev(netdev_);
     if (rx->is_tap) {
         rx->fd = netdev->tap_fd;
-    } else {
+    } else if (!is_afxdp_netdev(netdev_)) {
         struct sockaddr_ll sll;
         int ifindex, val;
         /* Result of tcpdump -dd inbound */
@@ -1318,10 +1285,18 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 {
     struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
     struct netdev *netdev = rx->up.netdev;
-    struct dp_packet *buffer;
+    struct dp_packet *buffer = NULL;
     ssize_t retval;
     int mtu;
 
+#if HAVE_AF_XDP
+    if (is_afxdp_netdev(netdev)) {
+        struct netdev_linux *dev = netdev_linux_cast(netdev);
+        int qid = rxq_->queue_id;
+
+        return netdev_linux_rxq_xsk(dev->xsk[qid], batch);
+    }
+#endif
     if (netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu)) {
         mtu = ETH_PAYLOAD_MAX;
     }
@@ -1329,6 +1304,7 @@ netdev_linux_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     /* Assume Ethernet port. No need to set packet_type. */
     buffer = dp_packet_new_with_headroom(VLAN_ETH_HEADER_LEN + mtu,
                                            DP_NETDEV_HEADROOM);
+
     retval = (rx->is_tap
               ? netdev_linux_rxq_recv_tap(rx->fd, buffer)
               : netdev_linux_rxq_recv_sock(rx->fd, buffer));
@@ -1480,7 +1456,8 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
     int error = 0;
     int sock = 0;
 
-    if (!is_tap_netdev(netdev_)) {
+    if (!is_tap_netdev(netdev_) &&
+        !is_afxdp_netdev(netdev_)) {
         if (netdev_linux_netnsid_is_remote(netdev_linux_cast(netdev_))) {
             error = EOPNOTSUPP;
             goto free_batch;
@@ -1499,6 +1476,36 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
         }
 
         error = netdev_linux_sock_batch_send(sock, ifindex, batch);
+#if HAVE_AF_XDP
+    } else if (is_afxdp_netdev(netdev_)) {
+        struct netdev_linux *dev = netdev_linux_cast(netdev_);
+        struct dp_packet_afxdp *xpacket;
+        struct umem_pool *first_mpool;
+        struct dp_packet *packet;
+
+        error = netdev_linux_afxdp_batch_send(dev->xsk[qid], batch);
+
+        /* all packets must come frome the same umem pool
+         * and has DPBUF_AFXDP type, otherwise free on-by-one
+         */
+        DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+            if (packet->source != DPBUF_AFXDP) {
+                goto free_batch;
+            }
+
+            xpacket = dp_packet_cast_afxdp(packet);
+            if (i == 0) {
+                first_mpool = xpacket->mpool;
+                continue;
+            }
+            if (xpacket->mpool != first_mpool) {
+                goto free_batch;
+            }
+        }
+        /* free in batch */
+        free_afxdp_buf_batch(batch);
+        return error;
+#endif
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }
@@ -3323,6 +3330,7 @@ const struct netdev_class netdev_linux_class = {
     NETDEV_LINUX_CLASS_COMMON,
     LINUX_FLOW_OFFLOAD_API,
     .type = "system",
+    .is_pmd = false,
     .construct = netdev_linux_construct,
     .get_stats = netdev_linux_get_stats,
     .get_features = netdev_linux_get_features,
@@ -3333,6 +3341,7 @@ const struct netdev_class netdev_linux_class = {
 const struct netdev_class netdev_tap_class = {
     NETDEV_LINUX_CLASS_COMMON,
     .type = "tap",
+    .is_pmd = false,
     .construct = netdev_linux_construct_tap,
     .get_stats = netdev_tap_get_stats,
     .get_features = netdev_linux_get_features,
@@ -3343,10 +3352,26 @@ const struct netdev_class netdev_internal_class = {
     NETDEV_LINUX_CLASS_COMMON,
     LINUX_FLOW_OFFLOAD_API,
     .type = "internal",
+    .is_pmd = false,
     .construct = netdev_linux_construct,
     .get_stats = netdev_internal_get_stats,
     .get_status = netdev_internal_get_status,
 };
+
+#ifdef HAVE_AF_XDP
+const struct netdev_class netdev_afxdp_class = {
+    NETDEV_LINUX_CLASS_COMMON,
+    .type = "afxdp",
+    .is_pmd = true,
+    .construct = netdev_linux_construct,
+    .get_stats = netdev_linux_get_stats,
+    .get_status = netdev_linux_get_status,
+    .set_config = netdev_afxdp_set_config,
+    .get_config = netdev_afxdp_get_config,
+    .reconfigure = netdev_afxdp_reconfigure,
+    .get_numa_id = netdev_afxdp_get_numa_id,
+};
+#endif
 
 
 #define CODEL_N_QUEUES 0x0000
