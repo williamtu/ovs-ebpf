@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 #include <math.h>
 
 #ifdef DPDK_NETDEV
@@ -186,6 +187,24 @@ struct pmd_perf_stats {
     char *log_reason;
 };
 
+#ifdef HAVE_AF_XDP
+static inline uint64_t
+rdtsc_syscall(struct pmd_perf_stats *s)
+{
+    struct timespec val;
+    uint64_t v;
+
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &val) != 0) {
+       return s->last_tsc = 0;
+    }
+
+    v  = (uint64_t) val.tv_sec * 1000000000LL;
+    v += (uint64_t) val.tv_nsec;
+
+    return s->last_tsc = v;
+}
+#endif
+
 /* Support for accurate timing of PMD execution on TSC clock cycle level.
  * These functions are intended to be invoked in the context of pmd threads. */
 
@@ -198,6 +217,15 @@ cycles_counter_update(struct pmd_perf_stats *s)
 {
 #ifdef DPDK_NETDEV
     return s->last_tsc = rte_get_tsc_cycles();
+#elif defined(HAVE_AF_XDP) && defined(__x86_64__)
+    /* This is x86-specific instructions. */
+    uint32_t h, l;
+    asm volatile("rdtsc" : "=a" (l), "=d" (h));
+
+    return s->last_tsc = ((uint64_t) h << 32) | l;
+#elif defined(HAVE_AF_XDP)
+    /* non-x86_64 architecture uses syscall */
+    return rdtsc_syscall(s);
 #else
     return s->last_tsc = 0;
 #endif

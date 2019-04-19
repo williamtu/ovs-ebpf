@@ -292,6 +292,49 @@ free_cacheline(void *p)
 #endif
 }
 
+#ifdef HAVE_AF_XDP
+void *
+xmalloc_pagealign(size_t size)
+{
+#ifdef HAVE_POSIX_MEMALIGN
+    void *p;
+    int error;
+
+    COVERAGE_INC(util_xalloc);
+    error = posix_memalign(&p, get_page_size(), size ? size : 1);
+    if (error != 0) {
+        out_of_memory();
+    }
+    return p;
+#else
+    /* Similar to xmalloc_cacheline, but replace
+     * CACHE_LINE_SIZE with get_page_size() */
+    void *p = xmalloc((get_page_size() - 1)
+                      + sizeof(void *)
+                      + ROUND_UP(size, get_page_size()));
+    bool runt = PAD_SIZE((uintptr_t) p, get_page_size()) < sizeof(void *);
+    void *r = (void *) ROUND_UP((uintptr_t) p + (runt ? get_page_size() : 0),
+                                get_page_size());
+    void **q = (void **) r - 1;
+    *q = p;
+    return r;
+#endif
+}
+
+void
+free_pagealign(void *p)
+{
+#ifdef HAVE_POSIX_MEMALIGN
+    free(p);
+#else
+    if (p) {
+        void **q = (void **) p - 1;
+        free(*q);
+    }
+#endif
+}
+#endif
+
 char *
 xasprintf(const char *format, ...)
 {
