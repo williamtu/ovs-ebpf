@@ -30,6 +30,7 @@
 #include "packets.h"
 #include "util.h"
 #include "flow.h"
+#include "lib/xdpsock.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -42,6 +43,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
+    DPBUF_AFXDP,                /* buffer data from XDP frame */
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
@@ -88,6 +90,20 @@ struct dp_packet {
         uint64_t data[DP_PACKET_CONTEXT_SIZE / 8];
     };
 };
+
+struct dp_packet_afxdp {
+    struct umem_pool *mpool;
+    struct dp_packet packet;
+};
+
+#if HAVE_AF_XDP
+static struct dp_packet_afxdp *
+dp_packet_cast_afxdp(const struct dp_packet *d OVS_UNUSED)
+{
+    ovs_assert(d->source == DPBUF_AFXDP);
+    return CONTAINER_OF(d, struct dp_packet_afxdp, packet);
+}
+#endif
 
 static inline void *dp_packet_data(const struct dp_packet *);
 static inline void dp_packet_set_data(struct dp_packet *, void *);
@@ -183,7 +199,21 @@ dp_packet_delete(struct dp_packet *b)
             free_dpdk_buf((struct dp_packet*) b);
             return;
         }
+        if (b->source == DPBUF_AFXDP) {
+#ifdef HAVE_AF_XDP
+            struct dp_packet_afxdp *xpacket;
 
+            /* if a packet is received from afxdp port,
+             * and tx to a system port. Then we need to
+             * push the rx umem back here
+             */
+            xpacket = dp_packet_cast_afxdp(b);
+            if (xpacket->mpool) {
+                umem_elem_push(xpacket->mpool, dp_packet_base(b));
+            }
+#endif
+            return;
+        }
         dp_packet_uninit(b);
         free(b);
     }

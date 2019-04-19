@@ -122,6 +122,16 @@ dp_packet_uninit(struct dp_packet *b)
              * created as a dp_packet */
             free_dpdk_buf((struct dp_packet*) b);
 #endif
+        } else if (b->source == DPBUF_AFXDP) {
+#ifdef HAVE_AF_XDP
+            struct dp_packet_afxdp *xpacket;
+
+            xpacket = dp_packet_cast_afxdp(b);
+            if (xpacket->mpool) {
+                umem_elem_push(xpacket->mpool, dp_packet_base(b));
+            }
+#endif
+            return;
         }
     }
 }
@@ -248,6 +258,8 @@ dp_packet_resize__(struct dp_packet *b, size_t new_headroom, size_t new_tailroom
     case DPBUF_STACK:
         OVS_NOT_REACHED();
 
+    case DPBUF_AFXDP:
+        OVS_NOT_REACHED();
     case DPBUF_STUB:
         b->source = DPBUF_MALLOC;
         new_base = xmalloc(new_allocated);
@@ -433,6 +445,7 @@ dp_packet_steal_data(struct dp_packet *b)
 {
     void *p;
     ovs_assert(b->source != DPBUF_DPDK);
+    ovs_assert(b->source != DPBUF_AFXDP);
 
     if (b->source == DPBUF_MALLOC && dp_packet_data(b) == dp_packet_base(b)) {
         p = dp_packet_data(b);

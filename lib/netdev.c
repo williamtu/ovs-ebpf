@@ -145,6 +145,7 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_linux_class);
         netdev_register_provider(&netdev_internal_class);
         netdev_register_provider(&netdev_tap_class);
+        netdev_register_provider(&netdev_afxdp_class);
         netdev_vport_tunnel_register();
 #endif
 #if defined(__FreeBSD__) || defined(__NetBSD__)
