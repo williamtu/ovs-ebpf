@@ -3959,6 +3959,7 @@ dpif_netdev_port_set_rxq_affinity(struct dp_netdev_port *port,
 
     core_ids = xmalloc(port->n_rxq * sizeof *core_ids);
     if (parse_affinity_list(affinity_list, core_ids, port->n_rxq)) {
+        VLOG_ERR("%s parse affinity error", __func__);
         error = EINVAL;
         goto exit;
     }
@@ -4008,6 +4009,7 @@ dpif_netdev_port_set_config(struct dpif *dpif, odp_port_t port_no,
     ovs_mutex_lock(&dp->port_mutex);
     error = get_port_by_number(dp, port_no, &port);
     if (error) {
+        VLOG_ERR("%s get port error", __func__);
         goto unlock;
     }
 
@@ -4050,8 +4052,10 @@ dpif_netdev_port_set_config(struct dpif *dpif, odp_port_t port_no,
         goto unlock;
     }
 
+    VLOG_INFO("%s set rxq affinity: %s", __func__, affinity_list);
     error = dpif_netdev_port_set_rxq_affinity(port, affinity_list);
     if (error) {
+        VLOG_ERR("%s set rxq affinity error: %s", __func__, affinity_list);
         goto unlock;
     }
     free(port->rxq_affinity_list);
