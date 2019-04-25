@@ -474,7 +474,7 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
                               struct dp_packet_batch *batch)
 {
     struct umem_elem *elems_pop[BATCH_SIZE];
-    struct umem_elem *elems_push[BATCH_SIZE];
+    struct umem_elem *elems_push[BATCH_SIZE*4];
     uint32_t tx_done, idx_cq = 0;
     struct dp_packet *packet;
     uint32_t idx;
@@ -509,11 +509,18 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
     xsk_ring_prod__submit(&xsk->tx, batch->count);
     xsk->outstanding_tx += batch->count;
 
+    if (xsk->outstanding_tx < BATCH_SIZE) {
+        kick_tx(xsk);
+    }
+
+    if (xsk->outstanding_tx < BATCH_SIZE*4) {
+        return;
+    }
+
     kick_tx(xsk);
-retry:
 
     /* Process CQ */
-    tx_done = xsk_ring_cons__peek(&xsk->umem->cq, batch->count, &idx_cq);
+    tx_done = xsk_ring_cons__peek(&xsk->umem->cq, BATCH_SIZE*4, &idx_cq);
     if (tx_done > 0) {
         xsk->outstanding_tx -= tx_done;
         xsk->tx_npkts += tx_done;
@@ -535,13 +542,6 @@ retry:
         return -ENOMEM;
     }
     xsk_ring_cons__release(&xsk->umem->cq, tx_done);
-
-    if (xsk->outstanding_tx > PROD_NUM_DESCS - (PROD_NUM_DESCS >> 2)) {
-        /* If there are still a lot not transmitted,
-         * try harder.
-         */
-        goto retry;
-    }
 
     return 0;
 }
