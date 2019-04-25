@@ -77,18 +77,31 @@ static inline int OVS_UNUSED ovs_spin_trylock(ovs_spinlock_t *sl)
                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 }
 
-void
-__umem_elem_push_n(struct umem_pool *umemp OVS_UNUSED, void **addrs, int n)
+inline int
+__umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
 {
     void *ptr;
 
     if (OVS_UNLIKELY(umemp->index + n > umemp->size)) {
-        OVS_NOT_REACHED();
+        return -ENOMEM;
     }
 
     ptr = &umemp->array[umemp->index];
     memcpy(ptr, addrs, n * sizeof(void *));
     umemp->index += n;
+
+    return 0;
+}
+
+int umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
+{
+    int ret;
+
+    ovs_spin_lock(&umemp->mutex);
+    ret = __umem_elem_push_n(umemp, n, addrs);
+    ovs_spin_unlock(&umemp->mutex);
+
+    return ret;
 }
 
 inline void
@@ -116,19 +129,32 @@ umem_elem_push(struct umem_pool *umemp OVS_UNUSED, void *addr)
     ovs_spin_unlock(&umemp->mutex);
 }
 
-void
-__umem_elem_pop_n(struct umem_pool *umemp OVS_UNUSED, void **addrs, int n)
+inline int
+__umem_elem_pop_n(struct umem_pool *umemp, int n, void **addrs)
 {
     void *ptr;
 
-    umemp->index -= n;
-
-    if (OVS_UNLIKELY(umemp->index < 0)) {
-        OVS_NOT_REACHED();
+    if (OVS_UNLIKELY(umemp->index - n < 0)) {
+        return -ENOMEM;
     }
 
+    umemp->index -= n;
     ptr = &umemp->array[umemp->index];
     memcpy(addrs, ptr, n * sizeof(void *));
+
+    return 0;
+}
+
+int
+umem_elem_pop_n(struct umem_pool *umemp, int n, void **addrs)
+{
+    int ret;
+
+    ovs_spin_lock(&umemp->mutex);
+    ret = __umem_elem_pop_n(umemp, n, addrs);
+    ovs_spin_unlock(&umemp->mutex);
+
+    return ret;
 }
 
 inline void *

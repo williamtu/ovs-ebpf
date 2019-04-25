@@ -371,8 +371,9 @@ int
 netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
                      struct dp_packet_batch *batch)
 {
-    unsigned int rcvd, i;
+    struct umem_elem *elems[BATCH_SIZE];
     uint32_t idx_rx = 0, idx_fq = 0;
+    unsigned int rcvd, i;
     int ret = 0;
 
     /* See if there is any packet on RX queue,
@@ -423,6 +424,11 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
     /* We've consume rcvd packets in RX, now re-fill the
      * same number back to FILL queue.
      */
+    ret = umem_elem_pop_n(&xsk->umem->mpool, rcvd, (void **)elems);
+    if (ret) {
+        return -ENOMEM;
+    }
+
     for (i = 0; i < rcvd; i++) {
         uint64_t index;
         struct umem_elem *elem;
@@ -434,7 +440,7 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
         }
 
         /* Get one free umem, program it into FILL queue */
-        elem = umem_elem_pop(&xsk->umem->mpool);
+        elem = elems[i];
         index = (uint64_t)((char *)elem - (char *)xsk->umem->buffer);
         ovs_assert((index & FRAME_SHIFT_MASK) == 0);
         *xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq) = index;
@@ -467,22 +473,28 @@ int
 netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
                               struct dp_packet_batch *batch)
 {
+    struct umem_elem *elems_pop[BATCH_SIZE];
+    struct umem_elem *elems_push[BATCH_SIZE];
     uint32_t tx_done, idx_cq = 0;
     struct dp_packet *packet;
     uint32_t idx;
-    int j;
+    int j, ret;
 
     /* Make sure we have enough TX descs */
     if (xsk_ring_prod__reserve(&xsk->tx, batch->count, &idx) == 0) {
         return -EAGAIN;
     }
 
+    ret = umem_elem_pop_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+    if (ret) {
+        return -EAGAIN;
+    }
+
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
-        struct dp_packet_afxdp *xpacket;
         struct umem_elem *elem;
         uint64_t index;
 
-        elem = umem_elem_pop(&xsk->umem->mpool);
+        elem = elems_pop[i];
         if (!elem) {
             return -EAGAIN;
         }
@@ -493,19 +505,12 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
         xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->addr = index;
         xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->len
             = dp_packet_size(packet);
-
-        if (packet->source == DPBUF_AFXDP) {
-            xpacket = dp_packet_cast_afxdp(packet);
-            umem_elem_push(xpacket->mpool, dp_packet_base(packet));
-             /* Avoid freeing it twice at dp_packet_uninit */
-            xpacket->mpool = NULL;
-        }
     }
     xsk_ring_prod__submit(&xsk->tx, batch->count);
     xsk->outstanding_tx += batch->count;
 
-retry:
     kick_tx(xsk);
+retry:
 
     /* Process CQ */
     tx_done = xsk_ring_cons__peek(&xsk->umem->cq, batch->count, &idx_cq);
@@ -523,7 +528,11 @@ retry:
 
         elem = ALIGNED_CAST(struct umem_elem *,
                             (char *)xsk->umem->buffer + addr);
-        umem_elem_push(&xsk->umem->mpool, elem);
+        elems_push[j] = elem;
+    }
+    ret = umem_elem_push_n(&xsk->umem->mpool, tx_done, (void **)elems_push);
+    if (ret < 0) {
+        return -ENOMEM;
     }
     xsk_ring_cons__release(&xsk->umem->cq, tx_done);
 

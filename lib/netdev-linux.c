@@ -1563,8 +1563,28 @@ netdev_linux_send(struct netdev *netdev_, int qid,
         error = netdev_linux_sock_batch_send(sock, ifindex, batch);
     } else if (is_afxdp_netdev(netdev_)) {
         struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+        struct dp_packet_afxdp *xpacket = NULL;
+        struct dp_packet *packet;
+        void *elems[BATCH_SIZE];
 
         error = netdev_linux_afxdp_batch_send(netdev->xsk[qid], batch);
+
+        DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+            if (packet->source != DPBUF_AFXDP) {
+                goto free_batch;
+            }
+        }
+        /* All packets are AF_XDP, so  handles its own delete in batch */
+        DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+            xpacket = dp_packet_cast_afxdp(packet);
+            if (xpacket->mpool) {
+                elems[i] = dp_packet_base(packet);
+            }
+        }
+        umem_elem_push_n(xpacket->mpool, batch->count, elems);
+        dp_packet_batch_init(batch);
+
+        return error;
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);
     }

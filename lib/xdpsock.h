@@ -59,9 +59,9 @@
 #define FRAME_SHIFT     XSK_UMEM__DEFAULT_FRAME_SHIFT
 #define FRAME_SHIFT_MASK    ((1<<FRAME_SHIFT)-1)
 
-#define NUM_FRAMES  1024
-#define PROD_NUM_DESCS 128
-#define CONS_NUM_DESCS 128
+#define NUM_FRAMES      4096
+#define PROD_NUM_DESCS  512
+#define CONS_NUM_DESCS  512
 
 #ifdef USE_XSK_DEFAULT
 #define PROD_NUM_DESCS XSK_RING_PROD__DEFAULT_NUM_DESCS
@@ -119,14 +119,18 @@ struct umem_elem {
 
 void __umem_elem_push(struct umem_pool *umemp, void *addr);
 void umem_elem_push(struct umem_pool *umemp, void *addr);
+int __umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs);
+int umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs);
+
 void *__umem_elem_pop(struct umem_pool *umemp);
 void *umem_elem_pop(struct umem_pool *umemp);
+int __umem_elem_pop_n(struct umem_pool *umemp, int n, void **addrs);
+int umem_elem_pop_n(struct umem_pool *umemp, int n, void **addrs);
+
 void **__umem_pool_alloc(unsigned int size);
 int umem_pool_init(struct umem_pool *umemp, unsigned int size);
 void umem_pool_cleanup(struct umem_pool *umemp);
 unsigned int umem_elem_count(struct umem_pool *mpool);
-void __umem_elem_pop_n(struct umem_pool *umemp, void **addrs, int n);
-void __umem_elem_push_n(struct umem_pool *umemp, void **addrs, int n);
 int xpacket_pool_init(struct xpacket_pool *xp, unsigned int size);
 void xpacket_pool_cleanup(struct xpacket_pool *xp);
 

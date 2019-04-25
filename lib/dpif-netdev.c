@@ -6943,6 +6943,8 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
             struct dp_packet_batch out;
 
             if (!should_steal) {
+                // how do afxdp do clone?
+                VLOG_INFO("%s clone afxdp?", __func__);
                 dp_packet_batch_clone(&out, packets_);
                 dp_packet_batch_reset_cutlen(packets_);
                 packets_ = &out;
@@ -6959,6 +6961,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                 dp_netdev_pmd_flush_output_on_port(pmd, p);
             }
 #endif
+            //?
             if (dp_packet_batch_size(&p->output_pkts)
                 + dp_packet_batch_size(packets_) > NETDEV_MAX_BURST) {
                 /* Flush here to avoid overflow. */
