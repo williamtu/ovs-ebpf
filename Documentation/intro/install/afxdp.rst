@@ -451,7 +451,7 @@ Create namespace and veth peer devices::
 Attach the veth port to br0::
 
   ovs-vsctl add-port br0 afxdp-p0 -- \
-    set interface afxdp-p0 options:n_rxq=1 type="afxdp" options:xdpmode=skb
+    set interface afxdp-p0 options:n_rxq=1 options:xdpmode=skb
 
 Setup the OpenFlow rules::
 
@@ -462,6 +462,9 @@ Setup the OpenFlow rules::
 In the namespace, run drop or bounce back the packet::
 
   ip netns exec at_ns0 ./xdp_rxq_info --dev p0 --action XDP_DROP
+  ip netns exec at_ns0 ./xdp_rxq_info --dev p0 --action XDP_TX
+
+Performace: for RX_DROP: 800Kpps, TX: 700Kpps
 
 Bug Reporting
 -------------
