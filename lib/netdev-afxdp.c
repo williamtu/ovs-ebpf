@@ -624,7 +624,7 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
     uint32_t tx_done, idx_cq = 0;
     struct dp_packet *packet;
     uint32_t idx = 0;
-    int j, ret;
+    int j, ret, retry_count = 0;
 
     /* Make sure we have enough TX descs */
     ret = xsk_ring_prod__reserve(&xsk->tx, batch->count, &idx);
@@ -691,6 +691,10 @@ retry:
         /* If there are still a lot not transmitted,
          * try harder.
          */
+        if (retry_count++ > 4) {
+            return 0;
+        }
+
         goto retry;
     }
 out:

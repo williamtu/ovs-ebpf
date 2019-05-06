@@ -448,10 +448,16 @@ Create namespace and veth peer devices::
   ip link set dev afxdp-p0 up
   ip netns exec at_ns0 ip link set dev p0 up
 
-Attach the veth port to br0::
+Attach the veth port to br0 (linux kernel mode)::
 
   ovs-vsctl add-port br0 afxdp-p0 -- \
     set interface afxdp-p0 options:n_rxq=1 options:xdpmode=skb
+
+
+Or, use AF_XDP with skb mode::
+
+  ovs-vsctl add-port br0 afxdp-p0 -- \
+    set interface afxdp-p0 type="afxdp" options:n_rxq=1 options:xdpmode=skb
 
 Setup the OpenFlow rules::
 
