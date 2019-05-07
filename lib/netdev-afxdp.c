@@ -19,7 +19,10 @@
 #endif
 
 #include <config.h>
+
 #include "netdev-linux.h"
+#include "netdev-afxdp.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -37,38 +40,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-#include "coverage.h"
-#include "dp-packet.h"
-#include "dpif-netlink.h"
-#include "dpif-netdev.h"
-#include "openvswitch/dynamic-string.h"
-#include "fatal-signal.h"
-#include "hash.h"
-#include "openvswitch/hmap.h"
-#include "netdev-provider.h"
-#include "netdev-tc-offloads.h"
-#include "netdev-vport.h"
-#include "netlink-notifier.h"
-#include "netlink-socket.h"
-#include "netlink.h"
-#include "netnsid.h"
-#include "openvswitch/ofpbuf.h"
-#include "openflow/openflow.h"
-#include "ovs-atomic.h"
-#include "packets.h"
-#include "openvswitch/poll-loop.h"
-#include "rtnetlink.h"
-#include "openvswitch/shash.h"
-#include "socket-util.h"
-#include "sset.h"
-#include "tc.h"
-#include "timer.h"
-#include "unaligned.h"
-#include "openvswitch/vlog.h"
-#include "util.h"
-#include "netdev-afxdp.h"
-
 #include <linux/if_ether.h>
 #include <linux/if_tun.h>
 #include <linux/types.h>
@@ -77,6 +48,36 @@
 #include <linux/rtnetlink.h>
 #include <linux/sockios.h>
 #include <linux/if_xdp.h>
+
+#include "coverage.h"
+#include "dp-packet.h"
+#include "dpif-netlink.h"
+#include "dpif-netdev.h"
+#include "fatal-signal.h"
+#include "hash.h"
+#include "netdev-provider.h"
+#include "netdev-tc-offloads.h"
+#include "netdev-vport.h"
+#include "netlink-notifier.h"
+#include "netlink-socket.h"
+#include "netlink.h"
+#include "netnsid.h"
+#include "openflow/openflow.h"
+#include "openvswitch/dynamic-string.h"
+#include "openvswitch/hmap.h"
+#include "openvswitch/ofpbuf.h"
+#include "openvswitch/poll-loop.h"
+#include "openvswitch/vlog.h"
+#include "openvswitch/shash.h"
+#include "ovs-atomic.h"
+#include "packets.h"
+#include "rtnetlink.h"
+#include "socket-util.h"
+#include "sset.h"
+#include "tc.h"
+#include "timer.h"
+#include "unaligned.h"
+#include "util.h"
 #include "xdpsock.h"
 
 #ifndef SOL_XDP
@@ -94,8 +95,8 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 #define UMEM2DESC(elem, base) ((uint64_t)((char *)elem - (char *)base))
 #define UMEM2XPKT(base, i) \
-    ALIGNED_CAST(struct dp_packet_afxdp *, (char *)base + \
-    i * sizeof(struct dp_packet_afxdp))
+                  ALIGNED_CAST(struct dp_packet_afxdp *, (char *)base + \
+                               i * sizeof(struct dp_packet_afxdp))
 
 static uint32_t prog_id;
 static struct xsk_socket_info *xsk_configure(int ifindex, int xdp_queue_id,
@@ -118,6 +119,7 @@ static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size,
         VLOG_ERR("xsk umem create failed (%s) mode: %s",
                  ovs_strerror(errno),
                  xdpmode == XDP_COPY ? "SKB": "DRV");
+        free(umem);
         return NULL;
     }
 
@@ -184,6 +186,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     if (if_indextoname(ifindex, devname) == NULL) {
         VLOG_ERR("ifindex %d to devname failed (%s)",
                  ifindex, ovs_strerror(errno));
+        free(xsk);
         return NULL;
     }
 
@@ -194,6 +197,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
                  ovs_strerror(errno),
                  xdpmode == XDP_COPY ? "SKB": "DRV",
                  queue_id);
+        free(xsk);
         return NULL;
     }
 
@@ -202,6 +206,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     if (ret) {
         VLOG_ERR("get XDP prog ID failed (%s)", ovs_strerror(errno));
         xsk_socket__delete(xsk->xsk);
+        free(xsk);
         return NULL;
     }
 
@@ -233,7 +238,7 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
     int ret;
 
     /* umem memory region */
-    ret = posix_memalign(&bufs, getpagesize(),
+    ret = posix_memalign(&bufs, get_page_size(),
                          NUM_FRAMES * FRAME_SIZE);
     memset(bufs, 0, NUM_FRAMES * FRAME_SIZE);
     ovs_assert(!ret);
@@ -243,40 +248,47 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
                               NUM_FRAMES * FRAME_SIZE,
                               xdpmode);
     if (!umem) {
+        free(bufs);
         return NULL;
     }
 
     xsk = xsk_configure_socket(umem, ifindex, xdp_queue_id, xdpmode);
     if (!xsk) {
         /* clean up umem and xpacket pool */
-        free(bufs);
         (void)xsk_umem__delete(umem->umem);
-        umem_pool_cleanup(&xsk->umem->mpool);
-        xpacket_pool_cleanup(&xsk->umem->xpool);
+        free(bufs);
+        umem_pool_cleanup(&umem->mpool);
+        xpacket_pool_cleanup(&umem->xpool);
+        free(umem);
     }
     return xsk;
 }
 
-void
+int
 xsk_configure_all(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
     struct xsk_socket_info *xsk;
     int i, ifindex;
 
-    ifindex = linux_get_ifindex(netdev->name);
+    ifindex = linux_get_ifindex(netdev_get_name(netdev));
 
     /* configure each queue */
     for (i = 0; i < netdev->n_rxq; i++) {
         VLOG_INFO("%s configure queue %d mode %s", __func__, i,
-                dev->xdpmode == XDP_COPY ? "SKB" : "DRV");
+                  dev->xdpmode == XDP_COPY ? "SKB" : "DRV");
         xsk = xsk_configure(ifindex, i, dev->xdpmode);
         if (!xsk) {
             VLOG_ERR("failed to create AF_XDP socket on queue %d", i);
-            return;
+            goto err;
         }
         dev->xsk[i] = xsk;
     }
+
+    return 0;
+err:
+    xsk_destroy_all(netdev);
+    return EINVAL;
 }
 
 static void OVS_UNUSED vlog_hex_dump(const void *buf, size_t count)
@@ -308,6 +320,9 @@ xsk_destroy(struct xsk_socket_info *xsk)
 
     /* cleanup metadata pool */
     xpacket_pool_cleanup(&xsk->umem->xpool);
+
+    free(xsk->umem);
+    free(xsk);
 }
 
 void
@@ -316,12 +331,13 @@ xsk_destroy_all(struct netdev *netdev)
     struct netdev_linux *dev = netdev_linux_cast(netdev);
     int i, ifindex;
 
-    ifindex = linux_get_ifindex(netdev->name);
+    ifindex = linux_get_ifindex(netdev_get_name(netdev));
 
     for (i = 0; i < MAX_XSKQ; i++) {
         if (dev->xsk[i]) {
             VLOG_INFO("destroy xsk[%d]", i);
             xsk_destroy(dev->xsk[i]);
+            dev->xsk[i] = NULL; /* avoid double destroy when reconfig */
         }
     }
     VLOG_INFO("remove xdp program");
@@ -335,12 +351,12 @@ print_xsk_stat(struct xsk_socket_info *xsk OVS_UNUSED) {
 
     optlen = sizeof stat;
     ovs_assert(getsockopt(xsk_socket__fd(xsk->xsk), SOL_XDP, XDP_STATISTICS,
-                &stat, &optlen) == 0);
+               &stat, &optlen) == 0);
 
     VLOG_DBG_RL(&rl, "rx dropped %llu, rx_invalid %llu, tx_invalid %llu",
-                     stat.rx_dropped,
-                     stat.rx_invalid_descs,
-                     stat.tx_invalid_descs);
+                stat.rx_dropped,
+                stat.rx_invalid_descs,
+                stat.tx_invalid_descs);
 }
 
 int
@@ -348,7 +364,6 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
                         char **errp OVS_UNUSED)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
-    struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
     const char *xdpmode;
     int new_n_rxq;
 
@@ -368,36 +383,15 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
     xdpmode = smap_get(args, "xdpmode");
     if (xdpmode && strncmp(xdpmode, "drv", 3) == 0) {
         dev->requested_xdpmode = XDP_ZEROCOPY;
-
         if (dev->xdpmode != dev->requested_xdpmode) {
-            VLOG_INFO("AF_XDP device %s in DRV mode", netdev->name);
-
-            /* From SKB mode to DRV mode */
-            dev->xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE;
-            dev->xdp_bind_flags = XDP_ZEROCOPY;
-            dev->xdpmode = XDP_ZEROCOPY;
             netdev_request_reconfigure(netdev);
         }
     } else {
         dev->requested_xdpmode = XDP_COPY;
         if (dev->xdpmode != dev->requested_xdpmode) {
-            VLOG_INFO("AF_XDP device %s in SKB mode", netdev->name);
-
-            /* From DRV mode to SKB mode */
-            dev->xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
-            dev->xdp_bind_flags = XDP_COPY;
-            dev->xdpmode = XDP_COPY;
             netdev_request_reconfigure(netdev);
         }
     }
-
-    if (dev->xdpmode == XDP_ZEROCOPY) {
-        if (setrlimit(RLIMIT_MEMLOCK, &r)) {
-            VLOG_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
-                      ovs_strerror(errno));
-        }
-    }
-
     ovs_mutex_unlock(&dev->mutex);
     return 0;
 }
@@ -419,6 +413,7 @@ int
 netdev_afxdp_reconfigure(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
+    struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
     int err = 0;
 
     ovs_mutex_lock(&dev->mutex);
@@ -429,11 +424,34 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
     }
 
     xsk_destroy_all(netdev);
-
     netdev->n_rxq = dev->requested_n_rxq;
-    dev->xdpmode = dev->requested_xdpmode;
 
-    xsk_configure_all(netdev);
+    if (dev->requested_xdpmode == XDP_ZEROCOPY) {
+        VLOG_INFO("AF_XDP device %s in DRV mode", netdev_get_name(netdev));
+        /* From SKB mode to DRV mode */
+        dev->xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE;
+        dev->xdp_bind_flags = XDP_ZEROCOPY;
+        dev->xdpmode = XDP_ZEROCOPY;
+
+        if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+            VLOG_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK): %s",
+                      ovs_strerror(errno));
+        }
+    } else {
+        VLOG_INFO("AF_XDP device %s in SKB mode", netdev_get_name(netdev));
+        /* From DRV mode to SKB mode */
+        dev->xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
+        dev->xdp_bind_flags = XDP_COPY;
+        dev->xdpmode = XDP_COPY;
+        /* TODO: set rlimit back to previous value
+         * when no device is in DRV mode.
+         */
+    }
+
+    err = xsk_configure_all(netdev);
+    if (err) {
+        VLOG_ERR("AF_XDP device %s reconfig fails", netdev_get_name(netdev));
+    }
     netdev_change_seq_changed(netdev);
 out:
     ovs_mutex_unlock(&dev->mutex);
@@ -446,7 +464,8 @@ netdev_afxdp_get_numa_id(const struct netdev *netdev)
     /* FIXME: Get netdev's PCIe device ID, then find
      * its NUMA node id.
      */
-    VLOG_INFO("FIXME: Device %s always use numa id 0", netdev->name);
+    VLOG_INFO("FIXME: Device %s always use numa id 0",
+              netdev_get_name(netdev));
     return 0;
 }
 
@@ -475,8 +494,8 @@ xsk_remove_xdp_program(uint32_t ifindex, int xdpmode)
     }
 }
 
-static inline struct dp_packet_afxdp *
-dp_packet_cast_afxdp(const struct dp_packet *d OVS_UNUSED)
+struct dp_packet_afxdp *
+dp_packet_cast_afxdp(const struct dp_packet *d)
 {
     ovs_assert(d->source == DPBUF_AFXDP);
     return CONTAINER_OF(d, struct dp_packet_afxdp, packet);
@@ -554,8 +573,7 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
         xpacket->mpool = &xsk->umem->mpool;
 
         /* Initialize the struct dp_packet */
-        dp_packet_set_base(packet, pkt);
-        dp_packet_set_data(packet, pkt);
+        dp_packet_use_afxdp(packet, pkt, FRAME_SIZE - FRAME_HEADROOM);
         dp_packet_set_size(packet, len);
 
         /* Add packet into batch, increase batch->count */
@@ -602,17 +620,21 @@ netdev_linux_rxq_xsk(struct xsk_socket_info *xsk,
     return 0;
 }
 
-static void kick_tx(struct xsk_socket_info *xsk)
+static inline int kick_tx(struct xsk_socket_info *xsk)
 {
     int ret;
 
-    /* This causes system call into kernel, avoid calling
-     * this as much as we can.
+    /* This causes system call into kernel's xsk_sendmsg, and
+     * xsk_generic_xmit (skb mode) or xsk_async_xmit (driver mode).
      */
     ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
-    if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY) {
-        return;
+    if (OVS_UNLIKELY(ret < 0)) {
+        if (errno == ENXIO || errno == ENOBUFS || errno == EOPNOTSUPP) {
+            return errno;
+        }
     }
+    /* no error, or EBUSY or EAGAIN */
+    return 0;
 }
 
 int
@@ -626,15 +648,16 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
     uint32_t idx = 0;
     int j, ret, retry_count = 0;
 
+    ret = umem_elem_pop_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+    if (OVS_UNLIKELY(ret)) {
+        return EAGAIN;
+    }
+
     /* Make sure we have enough TX descs */
     ret = xsk_ring_prod__reserve(&xsk->tx, batch->count, &idx);
     if (OVS_UNLIKELY(ret == 0)) {
-        return -EAGAIN;
-    }
-
-    ret = umem_elem_pop_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
-    if (OVS_UNLIKELY(ret)) {
-        return -EAGAIN;
+        umem_elem_push_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+        return EAGAIN;
     }
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
@@ -642,10 +665,6 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
         uint64_t index;
 
         elem = elems_pop[i];
-        if (OVS_UNLIKELY(!elem)) {
-            return -EAGAIN;
-        }
-
         /* Copy the packet to the umem we just pop from umem pool.
          * We can avoid this copy if the packet and the pop umem
          * are located in the same umem.
@@ -660,9 +679,15 @@ netdev_linux_afxdp_batch_send(struct xsk_socket_info *xsk,
     xsk_ring_prod__submit(&xsk->tx, batch->count);
     xsk->outstanding_tx += batch->count;
 
-    kick_tx(xsk);
-retry:
+    ret = kick_tx(xsk);
+    if (OVS_UNLIKELY(ret)) {
+        umem_elem_push_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+        VLOG_WARN_RL(&rl, "error sending AF_XDP packet: %s",
+                     ovs_strerror(ret));
+        return ret;
+    }
 
+retry:
     /* Process CQ */
     tx_done = xsk_ring_cons__peek(&xsk->umem->cq, batch->count, &idx_cq);
     if (tx_done > 0) {
@@ -681,10 +706,10 @@ retry:
                             (char *)xsk->umem->buffer + addr);
         elems_push[j] = elem;
     }
+
     ret = umem_elem_push_n(&xsk->umem->mpool, tx_done, (void **)elems_push);
-    if (OVS_UNLIKELY(ret < 0)) {
-        goto out;
-    }
+    ovs_assert(ret == 0);
+
     xsk_ring_cons__release(&xsk->umem->cq, tx_done);
 
     if (xsk->outstanding_tx > PROD_NUM_DESCS - (PROD_NUM_DESCS >> 2)) {
@@ -694,9 +719,8 @@ retry:
         if (retry_count++ > 4) {
             return 0;
         }
-
         goto retry;
     }
-out:
+
     return 0;
 }

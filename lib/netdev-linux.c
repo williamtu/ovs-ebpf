@@ -54,6 +54,7 @@
 #include "fatal-signal.h"
 #include "hash.h"
 #include "openvswitch/hmap.h"
+#include "netdev-afxdp.h"
 #include "netdev-provider.h"
 #include "netdev-tc-offloads.h"
 #include "netdev-vport.h"
@@ -75,7 +76,6 @@
 #include "unaligned.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
-#include "netdev-afxdp.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_linux);
 
@@ -1485,6 +1485,8 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
 #if HAVE_AF_XDP
     } else if (is_afxdp_netdev(netdev_)) {
         struct netdev_linux *dev = netdev_linux_cast(netdev_);
+        struct dp_packet_afxdp *xpacket;
+        struct umem_pool *first_mpool;
         struct dp_packet *packet;
 
         error = netdev_linux_afxdp_batch_send(dev->xsk[qid], batch);
@@ -1494,10 +1496,19 @@ netdev_linux_send(struct netdev *netdev_, int qid OVS_UNUSED,
                  /* free one-by-one */
                 goto free_batch;
             }
+
+            xpacket = dp_packet_cast_afxdp(packet);
+            if (i == 0) {
+                first_mpool = xpacket->mpool;
+                continue;
+            }
+            if (xpacket->mpool != first_mpool) {
+                goto free_batch;
+            }
         }
         /* free in batch */
         free_afxdp_buf_batch(batch);
-        return 0;
+        return error;
 #endif
     } else {
         error = netdev_linux_tap_batch_send(netdev_, batch);

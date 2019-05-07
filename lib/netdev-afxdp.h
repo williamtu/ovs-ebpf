@@ -30,7 +30,9 @@ struct dp_packet_batch;
 struct smap;
 struct dp_packet;
 
-void xsk_configure_all(struct netdev *netdev);
+struct dp_packet_afxdp * dp_packet_cast_afxdp(const struct dp_packet *d);
+
+int xsk_configure_all(struct netdev *netdev);
 
 void xsk_destroy_all(struct netdev *netdev);
 

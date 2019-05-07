@@ -62,6 +62,27 @@ dp_packet_use(struct dp_packet *b, void *base, size_t allocated)
     dp_packet_use__(b, base, allocated, DPBUF_MALLOC);
 }
 
+#if HAVE_AF_XDP
+/* Initialize 'b' as an empty dp_packet that contains
+ * memory starting at base.
+ */
+void
+dp_packet_use_afxdp(struct dp_packet *b, void *base, size_t allocated)
+{
+    dp_packet_set_base(b, base);
+    dp_packet_set_data(b, base);
+    dp_packet_set_size(b, 0);
+
+    dp_packet_set_allocated(b, allocated);
+    b->source = DPBUF_AFXDP;
+    dp_packet_reset_offsets(b);
+    pkt_metadata_init(&b->md, 0);
+    dp_packet_reset_cutlen(b);
+    dp_packet_reset_offload(b);
+    b->packet_type = htonl(PT_ETH);
+}
+#endif
+
 /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes of
  * memory starting at 'base'.  'base' should point to a buffer on the stack.
  * (Nothing actually relies on 'base' being allocated on the stack.  It could

@@ -134,7 +134,9 @@ static inline const void *dp_packet_get_nd_payload(const struct dp_packet *);
 void dp_packet_use(struct dp_packet *, void *, size_t);
 void dp_packet_use_stub(struct dp_packet *, void *, size_t);
 void dp_packet_use_const(struct dp_packet *, const void *, size_t);
-
+#if HAVE_AF_XDP
+void dp_packet_use_afxdp(struct dp_packet *, void *, size_t);
+#endif
 void dp_packet_init_dpdk(struct dp_packet *);
 
 void dp_packet_init(struct dp_packet *, size_t);
@@ -198,7 +200,7 @@ dp_packet_delete(struct dp_packet *b)
 
 #ifdef HAVE_AF_XDP
         if (b->source == DPBUF_AFXDP) {
-            free_afxdp_buf((struct dp_packet *)b);
+            free_afxdp_buf(b);
             return;
         }
 #endif

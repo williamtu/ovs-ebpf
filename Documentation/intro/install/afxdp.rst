@@ -91,21 +91,22 @@ vSwitch with AF_XDP will require the following:
 - libbpf from kernel source tree (kernel 5.0.0 or later)
 
 - Linux kernel XDP support, with the following options (required)
-  ``_CONFIG_BPF=y``
 
-  ``_CONFIG_BPF_SYSCALL=y``
+  * CONFIG_BPF=y
 
-  ``_CONFIG_XDP_SOCKETS=y``
+  * CONFIG_BPF_SYSCALL=y
+
+  * CONFIG_XDP_SOCKETS=y
 
 
 - The following optional Kconfig options are also recommended, but not
   required:
 
-  ``_CONFIG_BPF_JIT=y`` (Performance)
+  * CONFIG_BPF_JIT=y (Performance)
 
-  ``_CONFIG_HAVE_BPF_JIT=y`` (Performance)
+  * CONFIG_HAVE_BPF_JIT=y (Performance)
 
-  ``_CONFIG_XDP_SOCKETS_DIAG=y`` (Debugging)
+  * CONFIG_XDP_SOCKETS_DIAG=y (Debugging)
 
 - If possible, run **./xdpsock -r -N -z -i <your device>** under
   linux/samples/bpf.  This is the OVS indepedent benchmark tools for AF_XDP.
