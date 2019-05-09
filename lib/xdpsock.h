@@ -13,8 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #ifndef XDPSOCK_H
 #define XDPSOCK_H 1
+
+#include <bpf/libbpf.h>
+#include <bpf/xsk.h>
 #include <errno.h>
 #include <getopt.h>
 #include <libgen.h>
@@ -22,7 +26,10 @@
 #include <linux/if_link.h>
 #include <linux/if_xdp.h>
 #include <linux/if_ether.h>
+#include <locale.h>
 #include <net/if.h>
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -30,18 +37,13 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <locale.h>
-#include <sys/types.h>
-#include <poll.h>
-#include <bpf/libbpf.h>
 
-#include "ovs-atomic.h"
 #include "openvswitch/thread.h"
-#include <bpf/xsk.h>
+#include "ovs-atomic.h"
 
 #define FRAME_HEADROOM  XDP_PACKET_HEADROOM
 #define FRAME_SIZE      XSK_UMEM__DEFAULT_FRAME_SIZE
@@ -67,7 +69,7 @@ struct umem_pool {
     int index;      /* point to top */
     unsigned int size;
     ovs_spinlock_t mutex;
-    void **array;   /* a pointer array */
+    void **array;   /* a pointer array, point to umem buf */
 };
 
 /* array-based dp_packet_afxdp */
@@ -95,12 +97,6 @@ struct xsk_socket_info {
     unsigned long prev_rx_npkts;
     unsigned long prev_tx_npkts;
     uint32_t outstanding_tx;
-};
-
-struct umem_elem_head {
-    unsigned int index;
-    struct ovs_mutex mutex;
-    uint32_t n;
 };
 
 struct umem_elem {

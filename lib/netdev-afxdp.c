@@ -286,6 +286,7 @@ xsk_configure_all(struct netdev *netdev)
     }
 
     return 0;
+
 err:
     xsk_destroy_all(netdev);
     return EINVAL;

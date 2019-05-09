@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 #include <config.h>
+
+#include "xdpsock.h"
+
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -25,11 +28,11 @@
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
-#include "openvswitch/vlog.h"
+
 #include "async-append.h"
 #include "coverage.h"
 #include "dirs.h"
-#include "ovs-thread.h"
+#include "dp-packet.h"
 #include "sat-math.h"
 #include "socket-util.h"
 #include "svec.h"
@@ -39,18 +42,19 @@
 #include "timeval.h"
 #include "unixctl.h"
 #include "util.h"
-#include "ovs-atomic.h"
 #include "openvswitch/compiler.h"
-#include "dp-packet.h"
+#include "openvswitch/vlog.h"
+#include "ovs-atomic.h"
+#include "ovs-thread.h"
 
-#include "xdpsock.h"
-
-static inline void ovs_spinlock_init(ovs_spinlock_t *sl)
+static inline void
+ovs_spinlock_init(ovs_spinlock_t *sl)
 {
-    sl->locked = 0;
+    atomic_init(&sl->locked, 0);
 }
 
-static inline void ovs_spin_lock(ovs_spinlock_t *sl)
+static inline void
+ovs_spin_lock(ovs_spinlock_t *sl)
 {
     int exp = 0, locked = 0;
 
@@ -65,12 +69,14 @@ static inline void ovs_spin_lock(ovs_spinlock_t *sl)
     }
 }
 
-static inline void ovs_spin_unlock(ovs_spinlock_t *sl)
+static inline void
+ovs_spin_unlock(ovs_spinlock_t *sl)
 {
     atomic_store_explicit(&sl->locked, 0, memory_order_release);
 }
 
-static inline int OVS_UNUSED ovs_spin_trylock(ovs_spinlock_t *sl)
+static inline int OVS_UNUSED
+ovs_spin_trylock(ovs_spinlock_t *sl)
 {
     int exp = 0;
     return atomic_compare_exchange_strong_explicit(&sl->locked, &exp, 1,
@@ -106,13 +112,13 @@ int umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
 }
 
 inline void
-__umem_elem_push(struct umem_pool *umemp OVS_UNUSED, void *addr)
+__umem_elem_push(struct umem_pool *umemp, void *addr)
 {
     umemp->array[umemp->index++] = addr;
 }
 
 void
-umem_elem_push(struct umem_pool *umemp OVS_UNUSED, void *addr)
+umem_elem_push(struct umem_pool *umemp, void *addr)
 {
 
     if (OVS_UNLIKELY(umemp->index >= umemp->size)) {
@@ -159,13 +165,13 @@ umem_elem_pop_n(struct umem_pool *umemp, int n, void **addrs)
 }
 
 inline void *
-__umem_elem_pop(struct umem_pool *umemp OVS_UNUSED)
+__umem_elem_pop(struct umem_pool *umemp)
 {
     return umemp->array[--umemp->index];
 }
 
 void *
-umem_elem_pop(struct umem_pool *umemp OVS_UNUSED)
+umem_elem_pop(struct umem_pool *umemp)
 {
     void *ptr;
 
@@ -194,7 +200,7 @@ umem_elem_count(struct umem_pool *mpool)
 }
 
 int
-umem_pool_init(struct umem_pool *umemp OVS_UNUSED, unsigned int size)
+umem_pool_init(struct umem_pool *umemp, unsigned int size)
 {
     umemp->array = __umem_pool_alloc(size);
     if (!umemp->array) {
@@ -208,7 +214,7 @@ umem_pool_init(struct umem_pool *umemp OVS_UNUSED, unsigned int size)
 }
 
 void
-umem_pool_cleanup(struct umem_pool *umemp OVS_UNUSED)
+umem_pool_cleanup(struct umem_pool *umemp)
 {
     free(umemp->array);
 }
