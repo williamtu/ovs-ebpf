@@ -380,6 +380,8 @@ struct netdev_dpdk {
 
         /* If true, device was attached by rte_eth_dev_attach(). */
         bool attached;
+        /* If true, device was hop plugged by rte_eal_hotplug_add(). */
+        bool hotplugged;
         /* If true, rte_eth_dev_start() was successfully called */
         bool started;
         struct eth_addr hwaddr;
@@ -1376,6 +1378,14 @@ netdev_dpdk_destruct(struct netdev *netdev)
     rte_eth_dev_stop(dev->port_id);
     dev->started = false;
 
+    if (dev->hotplugged) {
+        int ret;
+        ret = rte_eal_hotplug_remove("vdev", "net_af_xdp");
+        if (ret) {
+            VLOG_ERR("%s unplugged error %d", __func__, ret);
+        }
+    }
+
     if (dev->attached) {
         /* Retrieve eth device data before closing it.
          * FIXME: avoid direct access to DPDK internal array rte_eth_devices.
@@ -1648,6 +1658,26 @@ netdev_dpdk_lookup_by_port_id(dpdk_port_t port_id)
 }
 
 static dpdk_port_t
+netdev_dpdk_get_af_xdp_port(const char *vdev_args)
+{
+    const char vdev_name[] = "net_af_xdp";
+    dpdk_port_t port_id;
+
+    if (rte_eal_hotplug_add("vdev", vdev_name, vdev_args) < 0) {
+        VLOG_WARN("Cannot hotplug AF_XDP device: %s\n", vdev_args);
+        return DPDK_ETH_PORT_ID_INVALID;
+    }
+
+    if (rte_eth_dev_get_port_by_name(vdev_name, &port_id) != 0) {
+        rte_eal_hotplug_remove("vdev", vdev_name);
+        VLOG_WARN("Cannot get AF_XDP port_id, device: %s\n", vdev_args);
+        return DPDK_ETH_PORT_ID_INVALID;
+    }
+
+    return port_id;
+}
+
+static dpdk_port_t
 netdev_dpdk_get_port_by_mac(const char *mac_str)
 {
     dpdk_port_t port_id;
@@ -1705,7 +1735,11 @@ netdev_dpdk_process_devargs(struct netdev_dpdk *dev,
 {
     dpdk_port_t new_port_id;
 
-    if (strncmp(devargs, "class=eth,mac=", 14) == 0) {
+    if (strncmp(devargs, "net_af_xdp", 10) == 0) {
+        new_port_id = netdev_dpdk_get_af_xdp_port(&devargs[11]);
+        dev->hotplugged = true;
+        VLOG_INFO("Device '%s' hotplugged to DPDK", devargs);
+    } else if (strncmp(devargs, "class=eth,mac=", 14) == 0) {
         new_port_id = netdev_dpdk_get_port_by_mac(&devargs[14]);
     } else {
         new_port_id = netdev_dpdk_get_port_by_devargs(devargs);
@@ -2031,7 +2065,7 @@ netdev_dpdk_policer_pkt_handle(struct rte_meter_srtcm *meter,
     uint32_t pkt_len = rte_pktmbuf_pkt_len(pkt) - sizeof(struct ether_hdr);
 
     return rte_meter_srtcm_color_blind_check(meter, profile, time, pkt_len) ==
-                                             e_RTE_METER_GREEN;
+                                             0; /* e_RTE_METER_GREEN */
 }
 
 static int
