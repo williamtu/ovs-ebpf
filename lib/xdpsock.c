@@ -15,10 +15,6 @@
  */
 #include <config.h>
 
-#if !HAVE_POSIX_MEMALIGN
-#error POSIX_MEMALIGN is required for AF_XDP
-#endif
-
 #include "xdpsock.h"
 #include "dp-packet.h"
 #include "openvswitch/compiler.h"

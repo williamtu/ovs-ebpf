@@ -209,15 +209,9 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
     struct xsk_socket_info *xsk;
     struct xsk_umem_info *umem;
     void *bufs;
-    int ret;
 
     /* umem memory region */
-    ret = posix_memalign(&bufs, get_page_size(),
-                         NUM_FRAMES * FRAME_SIZE);
-    if (ret) {
-        VLOG_ERR("posix_memalign fails: %s", ovs_strerror(errno));
-        return NULL;
-    }
+    bufs = xmalloc_pagealign(NUM_FRAMES * FRAME_SIZE);
     memset(bufs, 0, NUM_FRAMES * FRAME_SIZE);
 
     /* create AF_XDP socket */
@@ -225,7 +219,7 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
                               NUM_FRAMES * FRAME_SIZE,
                               xdpmode);
     if (!umem) {
-        free(bufs);
+        free_pagealign(bufs);
         return NULL;
     }
 
@@ -235,7 +229,7 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
         if (xsk_umem__delete(umem->umem)) {
             VLOG_ERR("xsk_umem__delete failed");
         }
-        free(bufs);
+        free_pagealign(bufs);
         umem_pool_cleanup(&umem->mpool);
         xpacket_pool_cleanup(&umem->xpool);
         free(umem);
@@ -289,7 +283,7 @@ xsk_destroy(struct xsk_socket_info *xsk)
     }
 
     /* free the packet buffer */
-    free(xsk->umem->buffer);
+    free_pagealign(xsk->umem->buffer);
 
     /* cleanup umem pool */
     umem_pool_cleanup(&xsk->umem->mpool);
