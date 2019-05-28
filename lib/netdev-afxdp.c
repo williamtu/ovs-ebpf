@@ -14,10 +14,6 @@
  * limitations under the License.
  */
 
-#if !defined(__i386__) && !defined(__x86_64__)
-#error AF_XDP supported only for Linux on x86 or x86_64
-#endif
-
 #include <config.h>
 
 #include "netdev-linux-private.h"
