@@ -38,9 +38,6 @@ struct dp_packet;
 struct netdev_rxq;
 struct netdev_stats;
 
-int xsk_configure_all(struct netdev *netdev);
-void xsk_destroy_all(struct netdev *netdev);
-
 int netdev_afxdp_rxq_construct(struct netdev_rxq *rxq_);
 void netdev_afxdp_destruct(struct netdev *netdev_);
 

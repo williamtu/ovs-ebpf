@@ -58,6 +58,8 @@ static struct xsk_socket_info *xsk_configure(int ifindex, int xdp_queue_id,
                                              int mode);
 static void xsk_remove_xdp_program(uint32_t ifindex, int xdpmode);
 static void xsk_destroy(struct xsk_socket_info *xsk);
+static int xsk_configure_all(struct netdev *netdev);
+static void xsk_destroy_all(struct netdev *netdev);
 
 static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size,
                                                 int xdpmode)
@@ -237,7 +239,7 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
     return xsk;
 }
 
-int
+static int
 xsk_configure_all(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
@@ -295,7 +297,7 @@ xsk_destroy(struct xsk_socket_info *xsk)
     free(xsk);
 }
 
-void
+static void
 xsk_destroy_all(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
