@@ -235,7 +235,7 @@ xmalloc_size_align(size_t size, size_t alignment)
     /* Allocate room for:
      *
      *     - Header padding: Up to alignment - 1 bytes, to allow the
-     *       pointer to be aligned exactly sizeof(void *) bytes before the
+     *       pointer 'q' to be aligned exactly sizeof(void *) bytes before the
      *       beginning of the alignment.
      *
      *     - Pointer: A pointer to the start of the header padding, to allow us
@@ -254,20 +254,28 @@ xmalloc_size_align(size_t size, size_t alignment)
      * p               q         r
      *
      */
-    void *p = xmalloc((alignment - 1)
-                      + sizeof(void *)
-                      + ROUND_UP(size, alignment));
-
-    /* When the padding size < sizeof(void*), need to move 'r' to the
-     * next alignment. So we need to ROUND_UP when xmalloc above, and
-     * ROUND_UP again when calculate 'r' below.
-     */
-    bool runt = PAD_SIZE((uintptr_t) p, alignment) < sizeof(void *);
-    void *r = (void *) ROUND_UP((uintptr_t) p + (runt ? : 0), alignment);
-    void **q = (void **) r - 1;
+    void *p, *r, **q;
+    bool runt;
 
     COVERAGE_INC(util_xalloc);
+    if (!IS_POW2(alignment) || (alignment % sizeof(void *) != 0)) {
+        ovs_abort(0, "Invalid alignment");
+    }
+
+    p = xmalloc((alignment - 1)
+                + sizeof(void *)
+                + ROUND_UP(size, alignment));
+
+    runt = PAD_SIZE((uintptr_t) p, alignment) < sizeof(void *);
+    /* When the padding size < sizeof(void*), we don't have enough room for
+     * pointer 'q'. As a reuslt, need to move 'r' to the next alignment.
+     * So ROUND_UP when xmalloc above, and ROUND_UP again when calculate 'r'
+     * below.
+     */
+    r = (void *) ROUND_UP((uintptr_t) p + (runt ? : 0), alignment);
+    q = (void **) r - 1;
     *q = p;
+
     return r;
 #endif
 }

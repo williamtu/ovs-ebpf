@@ -218,13 +218,11 @@ cycles_counter_update(struct pmd_perf_stats *s)
 #ifdef DPDK_NETDEV
     return s->last_tsc = rte_get_tsc_cycles();
 #elif !defined(_MSC_VER) && defined(__x86_64__)
-    /* This is x86-specific instructions. */
     uint32_t h, l;
     asm volatile("rdtsc" : "=a" (l), "=d" (h));
 
     return s->last_tsc = ((uint64_t) h << 32) | l;
 #elif defined(__linux__)
-    /* non-x86_64 architecture uses syscall */
     return rdtsc_syscall(s);
 #else
     return s->last_tsc = 0;

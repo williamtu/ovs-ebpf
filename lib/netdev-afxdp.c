@@ -248,7 +248,7 @@ xsk_configure_all(struct netdev *netdev)
 
     ifindex = linux_get_ifindex(netdev_get_name(netdev));
 
-    n_rxq = netdev->n_rxq;
+    n_rxq = netdev_n_rxq(netdev);
     dev->xsk = xmalloc(n_rxq * sizeof(struct xsk_socket_info *));
 
     /* configure each queue */
@@ -408,9 +408,10 @@ out:
 }
 
 static void
-netdev_afxdp_alloc_txq(struct netdev *netdev, unsigned int n_txqs)
+netdev_afxdp_alloc_txq(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
+    int n_txqs = netdev_n_txq(netdev);
     int i;
 
     dev->tx_locks = xmalloc(n_txqs * sizeof(struct ovs_spinlock));
@@ -440,8 +441,7 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
 
     netdev->n_rxq = dev->requested_n_rxq;
     netdev->n_txq = dev->requested_n_txq;
-
-    netdev_afxdp_alloc_txq(netdev, netdev->n_txq);
+    netdev_afxdp_alloc_txq(netdev);
 
     if (dev->requested_xdpmode == XDP_ZEROCOPY) {
         VLOG_INFO("AF_XDP device %s in DRV mode", netdev_get_name(netdev));
@@ -534,13 +534,13 @@ void
 free_afxdp_buf(struct dp_packet *p)
 {
     struct dp_packet_afxdp *xpacket;
-    unsigned long addr;
+    uintptr_t addr;
 
     xpacket = dp_packet_cast_afxdp(p);
     if (xpacket->mpool) {
         void *base = dp_packet_base(p);
 
-        addr = (unsigned long)base & (~FRAME_SHIFT_MASK);
+        addr = (uintptr_t)base & (~FRAME_SHIFT_MASK);
         umem_elem_push(xpacket->mpool, (void *)addr);
     }
 }
@@ -551,20 +551,37 @@ free_afxdp_buf_batch(struct dp_packet_batch *batch)
     struct dp_packet_afxdp *xpacket = NULL;
     struct dp_packet *packet;
     void *elems[BATCH_SIZE];
-    unsigned long addr;
+    uintptr_t addr;
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
         xpacket = dp_packet_cast_afxdp(packet);
         if (xpacket->mpool) {
             void *base = dp_packet_base(packet);
 
-            // use uintptr_t and other places
-            addr = (unsigned long)base & (~FRAME_SHIFT_MASK);
+            addr = (uintptr_t)base & (~FRAME_SHIFT_MASK);
             elems[i] = (void *)addr;
         }
     }
     umem_elem_push_n(xpacket->mpool, batch->count, elems);
     dp_packet_batch_init(batch);
+}
+
+static inline void
+handle_rx_fail(struct xsk_socket_info *xsk, int rcvd, int idx_rx)
+{
+    void *elems[BATCH_SIZE];
+    int i;
+
+    for (i = 0; i < rcvd; i++) {
+        uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
+        char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
+
+        elems[i] = (void *)((uintptr_t)pkt & (~FRAME_SHIFT_MASK));
+    }
+    umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems);
+
+    xsk_ring_cons__release(&xsk->rx, rcvd);
+    xsk->rx_dropped += rcvd;
 }
 
 int
@@ -594,17 +611,7 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 
     ret = umem_elem_pop_n(&xsk->umem->mpool, rcvd, (void **)elems);
     if (OVS_UNLIKELY(ret)) {
-        void *elems_push[BATCH_SIZE];
-
-        for (i = 0; i < rcvd; i++) {
-            uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
-            char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
-
-            elems_push[i] = (void *)((uintptr_t)pkt & (~FRAME_SHIFT_MASK));
-        }
-        umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems_push);
-        xsk_ring_cons__release(&xsk->rx, rcvd);
-        xsk->rx_dropped += rcvd;
+        handle_rx_fail(xsk, rcvd, idx_rx);
         return ENOMEM;
     }
 
@@ -614,22 +621,7 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
          * to move received packets from FILL queue to RX queue.
          */
         umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems);
-        
-        //copy from above
-#if 0
-        void *elems_push[BATCH_SIZE];
-
-        for (i = 0; i < rcvd; i++) {
-            uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
-            char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
-
-            elems_push[i] = (unsigned long)pkt & (~FRAME_SHIFT_MASK);
-        }
-        umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems_push);
-        //
-#endif
-        xsk_ring_cons__release(&xsk->rx, rcvd);
-        xsk->rx_dropped += rcvd;
+        handle_rx_fail(xsk, rcvd, idx_rx);
         return ENOMEM;
     }
 
@@ -780,11 +772,6 @@ netdev_afxdp_batch_send(struct netdev *netdev_, int qid,
     if (OVS_UNLIKELY(concurrent_txq)) {
         qid = qid % dev->up.n_txq;
         ovs_spin_lock(&dev->tx_locks[qid]);
-/*
-ing the same lock for all queues will procude a lot of unnecessary
-contentions. It's better to allocate array of locks. One per tx queue.
-you may re-allocate it in reconfigure() implementation.
-*/
     }
 
     /* Process CQ first. */
@@ -829,12 +816,6 @@ you may re-allocate it in reconfigure() implementation.
 
     ret = kick_tx(xsk);
     if (OVS_UNLIKELY(ret)) {
-       // umem_elem_push_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
-       /*
-
-     we really able to re-use these buffers? They are alredy in tx ring and
-     probably will be sent on next kick_tx().
-        */
         VLOG_WARN_RL(&rl, "error sending AF_XDP packet: %s",
                      ovs_strerror(ret));
     }

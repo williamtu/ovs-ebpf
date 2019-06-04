@@ -27,19 +27,20 @@
 
 #include "ovs-atomic.h"
 
-struct ovs_spinlock {
+struct OVS_LOCKABLE ovs_spinlock {
     atomic_int locked;
-    //__cacheline__
+    const char *where;  /* NULL if and only if uninitialized. */
 };
 
 static inline void
 ovs_spinlock_init(struct ovs_spinlock *sl)
 {
+    sl->where = "<unlocked>";
     atomic_init(&sl->locked, 0);
 }
 
 static inline void
-ovs_spin_lock(struct ovs_spinlock *sl)
+ovs_spin_lock_at(struct ovs_spinlock *sl, const char *w) OVS_ACQUIRES(sl)
 {
     int exp = 0, locked = 0;
 
@@ -52,20 +53,30 @@ ovs_spin_lock(struct ovs_spinlock *sl)
         }
         exp = 0;
     }
+    sl->where = w;
 }
+#define ovs_spin_lock(sl) \
+        ovs_spin_lock_at(sl, OVS_SOURCE_LOCATOR)
 
 static inline void
-ovs_spin_unlock(struct ovs_spinlock *sl)
+ovs_spin_unlock_at(struct ovs_spinlock *sl, const char *w) OVS_RELEASES(sl)
 {
     atomic_store_explicit(&sl->locked, 0, memory_order_release);
+    sl->where = w;
 }
+#define ovs_spin_unlock(sl) \
+        ovs_spin_unlock_at(sl, OVS_SOURCE_LOCATOR)
 
-static inline int OVS_UNUSED
-ovs_spin_trylock(struct ovs_spinlock *sl)
+static inline int
+ovs_spin_trylock_at(struct ovs_spinlock *sl, const char *w) OVS_TRY_LOCK(0, sl)
 {
     int exp = 0;
+
+    sl->where = w;
     return atomic_compare_exchange_strong_explicit(&sl->locked, &exp, 1,
                 memory_order_acquire,
                 memory_order_relaxed);
 }
+#define ovs_spin_trylock(sl) \
+        ovs_spin_trylock_at(sl, OVS_SOURCE_LOCATOR)
 #endif
