@@ -27,18 +27,19 @@
 
 #include "ovs-atomic.h"
 
-typedef struct {
+struct ovs_spinlock {
     atomic_int locked;
-} ovs_spinlock_t;
+    //__cacheline__
+};
 
 static inline void
-ovs_spinlock_init(ovs_spinlock_t *sl)
+ovs_spinlock_init(struct ovs_spinlock *sl)
 {
     atomic_init(&sl->locked, 0);
 }
 
 static inline void
-ovs_spin_lock(ovs_spinlock_t *sl)
+ovs_spin_lock(struct ovs_spinlock *sl)
 {
     int exp = 0, locked = 0;
 
@@ -54,13 +55,13 @@ ovs_spin_lock(ovs_spinlock_t *sl)
 }
 
 static inline void
-ovs_spin_unlock(ovs_spinlock_t *sl)
+ovs_spin_unlock(struct ovs_spinlock *sl)
 {
     atomic_store_explicit(&sl->locked, 0, memory_order_release);
 }
 
 static inline int OVS_UNUSED
-ovs_spin_trylock(ovs_spinlock_t *sl)
+ovs_spin_trylock(struct ovs_spinlock *sl)
 {
     int exp = 0;
     return atomic_compare_exchange_strong_explicit(&sl->locked, &exp, 1,

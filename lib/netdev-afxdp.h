@@ -49,6 +49,7 @@ int netdev_afxdp_batch_send(struct netdev *netdev_, int qid,
                             bool concurrent_txq);
 int netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
                             char **errp);
+int netdev_afxdp_set_tx_multiq(struct netdev *netdev, unsigned int n_txq);    
 int netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args);
 int netdev_afxdp_get_numa_id(const struct netdev *netdev);
 int netdev_afxdp_get_stats(const struct netdev *netdev_,
@@ -63,7 +64,6 @@ void signal_remove_xdp(struct netdev *netdev);
 #include "openvswitch/compiler.h"
 
 struct dp_packet;
-
 static inline void
 free_afxdp_buf(struct dp_packet *p OVS_UNUSED)
 {

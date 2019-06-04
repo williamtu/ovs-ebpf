@@ -214,20 +214,19 @@ x2nrealloc(void *p, size_t *n, size_t s)
     return xrealloc(p, *n * s);
 }
 
-/* Allocates and returns 'size' bytes of memory aligned to a cache line and in
- * dedicated cache lines.  That is, the memory block returned will not share a
- * cache line with other data, avoiding "false sharing".
+/* Allocates and returns 'size' bytes of memory aligned to 'alignment' bytes.
+ * 'alignment' must be a power of two and a multiple of sizeof(void *).
  *
- * Use free_cacheline() to free the returned memory block. */
+ * Use free_size_align() to free the returned memory block. */
 void *
-xmalloc_cacheline(size_t size)
+xmalloc_size_align(size_t size, size_t alignment)
 {
 #ifdef HAVE_POSIX_MEMALIGN
     void *p;
     int error;
 
     COVERAGE_INC(util_xalloc);
-    error = posix_memalign(&p, CACHE_LINE_SIZE, size ? size : 1);
+    error = posix_memalign(&p, alignment, size ? size : 1);
     if (error != 0) {
         out_of_memory();
     }
@@ -235,16 +234,16 @@ xmalloc_cacheline(size_t size)
 #else
     /* Allocate room for:
      *
-     *     - Header padding: Up to CACHE_LINE_SIZE - 1 bytes, to allow the
+     *     - Header padding: Up to alignment - 1 bytes, to allow the
      *       pointer to be aligned exactly sizeof(void *) bytes before the
-     *       beginning of a cache line.
+     *       beginning of the alignment.
      *
      *     - Pointer: A pointer to the start of the header padding, to allow us
      *       to free() the block later.
      *
      *     - User data: 'size' bytes.
      *
-     *     - Trailer padding: Enough to bring the user data up to a cache line
+     *     - Trailer padding: Enough to bring the user data up to a alignment
      *       multiple.
      *
      * +---------------+---------+------------------------+---------+
@@ -255,16 +254,46 @@ xmalloc_cacheline(size_t size)
      * p               q         r
      *
      */
-    void *p = xmalloc((CACHE_LINE_SIZE - 1)
+    void *p = xmalloc((alignment - 1)
                       + sizeof(void *)
-                      + ROUND_UP(size, CACHE_LINE_SIZE));
-    bool runt = PAD_SIZE((uintptr_t) p, CACHE_LINE_SIZE) < sizeof(void *);
-    void *r = (void *) ROUND_UP((uintptr_t) p + (runt ? CACHE_LINE_SIZE : 0),
-                                CACHE_LINE_SIZE);
+                      + ROUND_UP(size, alignment));
+
+    /* When the padding size < sizeof(void*), need to move 'r' to the
+     * next alignment. So we need to ROUND_UP when xmalloc above, and
+     * ROUND_UP again when calculate 'r' below.
+     */
+    bool runt = PAD_SIZE((uintptr_t) p, alignment) < sizeof(void *);
+    void *r = (void *) ROUND_UP((uintptr_t) p + (runt ? : 0), alignment);
     void **q = (void **) r - 1;
+
+    COVERAGE_INC(util_xalloc);
     *q = p;
     return r;
 #endif
+}
+
+void
+free_size_align(void *p)
+{
+#ifdef HAVE_POSIX_MEMALIGN
+    free(p);
+#else
+    if (p) {
+        void **q = (void **) p - 1;
+        free(*q);
+    }
+#endif
+}
+
+/* Allocates and returns 'size' bytes of memory aligned to a cache line and in
+ * dedicated cache lines.  That is, the memory block returned will not share a
+ * cache line with other data, avoiding "false sharing".
+ *
+ * Use free_cacheline() to free the returned memory block. */
+void *
+xmalloc_cacheline(size_t size)
+{
+    return xmalloc_size_align(size, CACHE_LINE_SIZE);
 }
 
 /* Like xmalloc_cacheline() but clears the allocated memory to all zero
@@ -282,58 +311,20 @@ xzalloc_cacheline(size_t size)
 void
 free_cacheline(void *p)
 {
-#ifdef HAVE_POSIX_MEMALIGN
-    free(p);
-#else
-    if (p) {
-        void **q = (void **) p - 1;
-        free(*q);
-    }
-#endif
+    free_size_align(p);
 }
 
-#ifdef HAVE_AF_XDP
 void *
 xmalloc_pagealign(size_t size)
 {
-#ifdef HAVE_POSIX_MEMALIGN
-    void *p;
-    int error;
-
-    COVERAGE_INC(util_xalloc);
-    error = posix_memalign(&p, get_page_size(), size ? size : 1);
-    if (error != 0) {
-        out_of_memory();
-    }
-    return p;
-#else
-    /* Similar to xmalloc_cacheline, but replace
-     * CACHE_LINE_SIZE with get_page_size() */
-    void *p = xmalloc((get_page_size() - 1)
-                      + sizeof(void *)
-                      + ROUND_UP(size, get_page_size()));
-    bool runt = PAD_SIZE((uintptr_t) p, get_page_size()) < sizeof(void *);
-    void *r = (void *) ROUND_UP((uintptr_t) p + (runt ? get_page_size() : 0),
-                                get_page_size());
-    void **q = (void **) r - 1;
-    *q = p;
-    return r;
-#endif
+    return xmalloc_size_align(size, get_page_size());
 }
 
 void
 free_pagealign(void *p)
 {
-#ifdef HAVE_POSIX_MEMALIGN
-    free(p);
-#else
-    if (p) {
-        void **q = (void **) p - 1;
-        free(*q);
-    }
-#endif
+    free_size_align(p);
 }
-#endif
 
 char *
 xasprintf(const char *format, ...)

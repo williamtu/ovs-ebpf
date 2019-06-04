@@ -106,11 +106,11 @@ struct netdev_linux {
 
     /* AF_XDP information */
 #ifdef HAVE_AF_XDP
-    struct xsk_socket_info *xsk[MAX_XSKQ];
-    int requested_n_rxq;
+    struct xsk_socket_info **xsk;
+    int requested_n_rxq, requested_n_txq;
     int xdpmode, requested_xdpmode; /* detect mode changed */
     int xdp_flags, xdp_bind_flags;
-    ovs_spinlock_t tx_lock;
+    struct ovs_spinlock *tx_locks;
 #endif
 };
 

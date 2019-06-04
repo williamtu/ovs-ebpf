@@ -39,9 +39,9 @@ __umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
 
 void umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
 {
-    ovs_spin_lock(&umemp->mutex);
+    ovs_spin_lock(&umemp->lock);
     __umem_elem_push_n(umemp, n, addrs);
-    ovs_spin_unlock(&umemp->mutex);
+    ovs_spin_unlock(&umemp->lock);
 }
 
 static inline void
@@ -60,9 +60,9 @@ umem_elem_push(struct umem_pool *umemp, void *addr)
 
     ovs_assert(((uint64_t)addr & FRAME_SHIFT_MASK) == 0);
 
-    ovs_spin_lock(&umemp->mutex);
+    ovs_spin_lock(&umemp->lock);
     __umem_elem_push(umemp, addr);
-    ovs_spin_unlock(&umemp->mutex);
+    ovs_spin_unlock(&umemp->lock);
 }
 
 static inline int
@@ -86,9 +86,9 @@ umem_elem_pop_n(struct umem_pool *umemp, int n, void **addrs)
 {
     int ret;
 
-    ovs_spin_lock(&umemp->mutex);
+    ovs_spin_lock(&umemp->lock);
     ret = __umem_elem_pop_n(umemp, n, addrs);
-    ovs_spin_unlock(&umemp->mutex);
+    ovs_spin_unlock(&umemp->lock);
 
     return ret;
 }
@@ -108,9 +108,9 @@ umem_elem_pop(struct umem_pool *umemp)
 {
     void *ptr;
 
-    ovs_spin_lock(&umemp->mutex);
+    ovs_spin_lock(&umemp->lock);
     ptr = __umem_elem_pop(umemp);
-    ovs_spin_unlock(&umemp->mutex);
+    ovs_spin_unlock(&umemp->lock);
 
     return ptr;
 }
@@ -119,15 +119,10 @@ static void **
 __umem_pool_alloc(unsigned int size)
 {
     void *bufs;
-    int ret;
 
-    ret = posix_memalign(&bufs, getpagesize(),
-                         size * sizeof(void *));
-    if (ret) {
-        return NULL;
-    }
-
+    bufs = xmalloc_pagealign(size * sizeof(void *));
     memset(bufs, 0, size * sizeof(void *));
+
     return (void **)bufs;
 }
 
@@ -141,14 +136,14 @@ umem_pool_init(struct umem_pool *umemp, unsigned int size)
 
     umemp->size = size;
     umemp->index = 0;
-    ovs_spinlock_init(&umemp->mutex);
+    ovs_spinlock_init(&umemp->lock);
     return 0;
 }
 
 void
 umem_pool_cleanup(struct umem_pool *umemp)
 {
-    free(umemp->array);
+    free_pagealign(umemp->array);
     umemp->array = NULL;
 }
 
@@ -157,23 +152,19 @@ int
 xpacket_pool_init(struct xpacket_pool *xp, unsigned int size)
 {
     void *bufs;
-    int ret;
 
-    ret = posix_memalign(&bufs, getpagesize(),
-                         size * sizeof(struct dp_packet_afxdp));
-    if (ret) {
-        return -ENOMEM;
-    }
+    bufs = xmalloc_pagealign(size * sizeof(struct dp_packet_afxdp));
     memset(bufs, 0, size * sizeof(struct dp_packet_afxdp));
 
     xp->array = bufs;
     xp->size = size;
+
     return 0;
 }
 
 void
 xpacket_pool_cleanup(struct xpacket_pool *xp)
 {
-    free(xp->array);
+    free_pagealign(xp->array);
     xp->array = NULL;
 }

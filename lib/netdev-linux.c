@@ -3299,6 +3299,7 @@ const struct netdev_class netdev_afxdp_class = {
     .get_config = netdev_afxdp_get_config,
     .reconfigure = netdev_afxdp_reconfigure,
     .get_numa_id = netdev_afxdp_get_numa_id,
+    .set_tx_multiq = netdev_afxdp_set_tx_multiq,
     .send = netdev_afxdp_batch_send,
     .rxq_construct = netdev_afxdp_rxq_construct,
     .rxq_recv = netdev_afxdp_rxq_recv,

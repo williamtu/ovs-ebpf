@@ -110,14 +110,14 @@ vSwitch with AF_XDP will require the following:
 
 - Once your AF_XDP-enabled kernel is ready, if possible, run
   **./xdpsock -r -N -z -i <your device>** under linux/samples/bpf.
-  This is an OVS indepedent benchmark tools for AF_XDP.
+  This is an OVS independent benchmark tools for AF_XDP.
   It makes sure your basic kernel requirements are met for AF_XDP.
 
 
 Installing
 ----------
 For OVS to use AF_XDP netdev, it has to be configured with LIBBPF support.
-Frist, clone a recent version of Linux bpf-next tree::
+First, clone a recent version of Linux bpf-next tree::
 
   git clone git://git.kernel.org/pub/scm/linux/kernel/git/bpf/bpf-next.git
 

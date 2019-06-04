@@ -61,15 +61,15 @@ static void xsk_destroy(struct xsk_socket_info *xsk);
 static int xsk_configure_all(struct netdev *netdev);
 static void xsk_destroy_all(struct netdev *netdev);
 
-static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size,
-                                                int xdpmode)
+static struct xsk_umem_info *
+xsk_configure_umem(void *buffer, uint64_t size, int xdpmode)
 {
     struct xsk_umem_config uconfig OVS_UNUSED;
     struct xsk_umem_info *umem;
     int ret;
     int i;
 
-    umem = xcalloc(1, sizeof(*umem));
+    umem = xcalloc(1, sizeof *umem);
     ret = xsk_umem__create(&umem->umem, buffer, size, &umem->fq, &umem->cq,
                            NULL);
     if (ret) {
@@ -244,9 +244,12 @@ xsk_configure_all(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
     struct xsk_socket_info *xsk;
-    int i, ifindex;
+    int i, ifindex, n_rxq;
 
     ifindex = linux_get_ifindex(netdev_get_name(netdev));
+
+    n_rxq = netdev->n_rxq;
+    dev->xsk = xmalloc(n_rxq * sizeof(struct xsk_socket_info *));
 
     /* configure each queue */
     for (i = 0; i < netdev->n_rxq; i++) {
@@ -310,10 +313,10 @@ xsk_destroy_all(struct netdev *netdev)
             VLOG_INFO("destroy xsk[%d]", i);
             xsk_destroy(dev->xsk[i]);
             dev->xsk[i] = NULL;
-            dev->xsk[i]->rx_dropped = 0;
-            dev->xsk[i]->tx_dropped = 0;
         }
     }
+    free(dev->xsk);
+
     VLOG_INFO("remove xdp program");
     xsk_remove_xdp_program(ifindex, dev->xdpmode);
 }
@@ -386,6 +389,38 @@ netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args)
 }
 
 int
+netdev_afxdp_set_tx_multiq(struct netdev *netdev, unsigned int n_txq)
+{
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+
+    if (dev->requested_n_txq == n_txq) {
+        goto out;
+    }
+
+    dev->requested_n_txq = n_txq;
+    netdev_request_reconfigure(netdev);
+
+out:
+    ovs_mutex_unlock(&dev->mutex);
+    return 0;
+}
+
+static void
+netdev_afxdp_alloc_txq(struct netdev *netdev, unsigned int n_txqs)
+{
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
+    int i;
+
+    dev->tx_locks = xmalloc(n_txqs * sizeof(struct ovs_spinlock));
+
+    for (i = 0; i < n_txqs; i++) {
+        ovs_spinlock_init(&dev->tx_locks[i]);
+    }
+}
+
+int
 netdev_afxdp_reconfigure(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
@@ -395,12 +430,18 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
     ovs_mutex_lock(&dev->mutex);
 
     if (netdev->n_rxq == dev->requested_n_rxq
+        && netdev->n_txq == dev->requested_n_txq
         && dev->xdpmode == dev->requested_xdpmode) {
         goto out;
     }
 
     xsk_destroy_all(netdev);
+    free(dev->tx_locks);
+
     netdev->n_rxq = dev->requested_n_rxq;
+    netdev->n_txq = dev->requested_n_txq;
+
+    netdev_afxdp_alloc_txq(netdev, netdev->n_txq);
 
     if (dev->requested_xdpmode == XDP_ZEROCOPY) {
         VLOG_INFO("AF_XDP device %s in DRV mode", netdev_get_name(netdev));
@@ -512,12 +553,12 @@ free_afxdp_buf_batch(struct dp_packet_batch *batch)
     void *elems[BATCH_SIZE];
     unsigned long addr;
 
-   /* all packets are AF_XDP, so handles its own delete in batch */
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
         xpacket = dp_packet_cast_afxdp(packet);
         if (xpacket->mpool) {
             void *base = dp_packet_base(packet);
 
+            // use uintptr_t and other places
             addr = (unsigned long)base & (~FRAME_SHIFT_MASK);
             elems[i] = (void *)addr;
         }
@@ -553,6 +594,15 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 
     ret = umem_elem_pop_n(&xsk->umem->mpool, rcvd, (void **)elems);
     if (OVS_UNLIKELY(ret)) {
+        void *elems_push[BATCH_SIZE];
+
+        for (i = 0; i < rcvd; i++) {
+            uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
+            char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
+
+            elems_push[i] = (void *)((uintptr_t)pkt & (~FRAME_SHIFT_MASK));
+        }
+        umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems_push);
         xsk_ring_cons__release(&xsk->rx, rcvd);
         xsk->rx_dropped += rcvd;
         return ENOMEM;
@@ -564,6 +614,20 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
          * to move received packets from FILL queue to RX queue.
          */
         umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems);
+        
+        //copy from above
+#if 0
+        void *elems_push[BATCH_SIZE];
+
+        for (i = 0; i < rcvd; i++) {
+            uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
+            char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
+
+            elems_push[i] = (unsigned long)pkt & (~FRAME_SHIFT_MASK);
+        }
+        umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems_push);
+        //
+#endif
         xsk_ring_cons__release(&xsk->rx, rcvd);
         xsk->rx_dropped += rcvd;
         return ENOMEM;
@@ -714,7 +778,13 @@ netdev_afxdp_batch_send(struct netdev *netdev_, int qid,
     int ret;
 
     if (OVS_UNLIKELY(concurrent_txq)) {
-        ovs_spin_lock(&dev->tx_lock);
+        qid = qid % dev->up.n_txq;
+        ovs_spin_lock(&dev->tx_locks[qid]);
+/*
+ing the same lock for all queues will procude a lot of unnecessary
+contentions. It's better to allocate array of locks. One per tx queue.
+you may re-allocate it in reconfigure() implementation.
+*/
     }
 
     /* Process CQ first. */
@@ -759,7 +829,12 @@ netdev_afxdp_batch_send(struct netdev *netdev_, int qid,
 
     ret = kick_tx(xsk);
     if (OVS_UNLIKELY(ret)) {
-        umem_elem_push_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+       // umem_elem_push_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+       /*
+
+     we really able to re-use these buffers? They are alredy in tx ring and
+     probably will be sent on next kick_tx().
+        */
         VLOG_WARN_RL(&rl, "error sending AF_XDP packet: %s",
                      ovs_strerror(ret));
     }
@@ -772,7 +847,7 @@ out:
     }
 
     if (OVS_UNLIKELY(concurrent_txq)) {
-        ovs_spin_unlock(&dev->tx_lock);
+        ovs_spin_unlock(&dev->tx_locks[qid]);
     }
     return error;
 }
@@ -797,17 +872,17 @@ netdev_afxdp_destruct(struct netdev *netdev_)
 }
 
 int
-netdev_afxdp_get_stats(const struct netdev *netdev_,
+netdev_afxdp_get_stats(const struct netdev *netdev,
                        struct netdev_stats *stats)
 {
-    struct netdev_linux *dev = netdev_linux_cast(netdev_);
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
     struct netdev_stats dev_stats;
     struct xsk_socket_info *xsk;
     int error, i;
 
     ovs_mutex_lock(&dev->mutex);
 
-    error = get_stats_via_netlink(netdev_, &dev_stats);
+    error = get_stats_via_netlink(netdev, &dev_stats);
     if (error) {
         VLOG_WARN_RL(&rl, "Error getting AF_XDP statistics");
     } else {
@@ -836,7 +911,7 @@ netdev_afxdp_get_stats(const struct netdev *netdev_,
         stats->tx_window_errors    += dev_stats.tx_window_errors;
 
         /* Account the dropped in each xsk */
-        for (i = 0; i < MAX_XSKQ; i++) {
+        for (i = 0; i < netdev_n_rxq(netdev); i++) {
             xsk = dev->xsk[i];
             if (xsk) {
                 stats->rx_dropped += xsk->rx_dropped;

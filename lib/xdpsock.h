@@ -53,7 +53,7 @@ BUILD_ASSERT_DECL(NUM_FRAMES == 2 * (PROD_NUM_DESCS + CONS_NUM_DESCS));
 struct umem_pool {
     int index;      /* point to top */
     unsigned int size;
-    ovs_spinlock_t mutex;
+    struct ovs_spinlock lock;
     void **array;   /* a pointer array, point to umem buf */
 };
 
