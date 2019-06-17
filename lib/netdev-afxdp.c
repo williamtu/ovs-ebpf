@@ -53,7 +53,6 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
                   ALIGNED_CAST(struct dp_packet_afxdp *, (char *)base + \
                                i * sizeof(struct dp_packet_afxdp))
 
-static uint32_t prog_id;
 static struct xsk_socket_info *xsk_configure(int ifindex, int xdp_queue_id,
                                              int mode);
 static void xsk_remove_xdp_program(uint32_t ifindex, int xdpmode);
@@ -137,7 +136,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     struct xsk_socket_config cfg;
     struct xsk_socket_info *xsk;
     char devname[IF_NAMESIZE];
-    uint32_t idx = 0;
+    uint32_t idx = 0, prog_id;
     int ret;
     int i;
 
@@ -243,27 +242,27 @@ static int
 xsk_configure_all(struct netdev *netdev)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
-    struct xsk_socket_info *xsk;
+    struct xsk_socket_info *xsk_info;
     int i, ifindex, n_rxq;
 
     ifindex = linux_get_ifindex(netdev_get_name(netdev));
 
     n_rxq = netdev_n_rxq(netdev);
-    dev->xsks = xmalloc(n_rxq * sizeof(struct xsk_socket_info *));
+    dev->xsks = xzalloc(n_rxq * sizeof(struct xsk_socket_info *));
 
     /* configure each queue */
     for (i = 0; i < n_rxq; i++) {
         VLOG_INFO("%s configure queue %d mode %s", __func__, i,
                   dev->xdpmode == XDP_COPY ? "SKB" : "DRV");
-        xsk = xsk_configure(ifindex, i, dev->xdpmode);
-        if (!xsk) {
+        xsk_info = xsk_configure(ifindex, i, dev->xdpmode);
+        if (!xsk_info) {
             VLOG_ERR("failed to create AF_XDP socket on queue %d", i);
             dev->xsks[i] = NULL;
             goto err;
         }
-        dev->xsks[i] = xsk;
-        xsk->rx_dropped = 0;
-        xsk->tx_dropped = 0;
+        dev->xsks[i] = xsk_info;
+        xsk_info->rx_dropped = 0;
+        xsk_info->tx_dropped = 0;
     }
 
     return 0;
@@ -274,27 +273,29 @@ err:
 }
 
 static void
-xsk_destroy(struct xsk_socket_info *xsk)
+xsk_destroy(struct xsk_socket_info *xsk_info)
 {
     struct xsk_umem *umem;
 
-    umem = xsk->umem->umem;
-    xsk_socket__delete(xsk->xsk);
+    xsk_socket__delete(xsk_info->xsk);
+    xsk_info->xsk = NULL;
+
+    umem = xsk_info->umem->umem;
     if (xsk_umem__delete(umem)) {
         VLOG_ERR("xsk_umem__delete failed");
     }
 
     /* free the packet buffer */
-    free_pagealign(xsk->umem->buffer);
+    free_pagealign(xsk_info->umem->buffer);
 
     /* cleanup umem pool */
-    umem_pool_cleanup(&xsk->umem->mpool);
+    umem_pool_cleanup(&xsk_info->umem->mpool);
 
     /* cleanup metadata pool */
-    xpacket_pool_cleanup(&xsk->umem->xpool);
+    xpacket_pool_cleanup(&xsk_info->umem->xpool);
 
-    free(xsk->umem);
-    free(xsk);
+    free(xsk_info->umem);
+    free(xsk_info);
 }
 
 static void
@@ -466,26 +467,22 @@ netdev_afxdp_get_numa_id(const struct netdev *netdev)
 static void
 xsk_remove_xdp_program(uint32_t ifindex, int xdpmode)
 {
-    uint32_t curr_prog_id = 0;
+    uint32_t prog_id = 0;
     uint32_t flags;
 
     /* remove_xdp_program() */
     if (xdpmode == XDP_COPY) {
         flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
+        VLOG_INFO("%s copy mode", __func__);
     } else {
         flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_DRV_MODE;
+        VLOG_INFO("%s drv mode", __func__);
     }
 
-    if (bpf_get_link_xdp_id(ifindex, &curr_prog_id, flags)) {
-        bpf_set_link_xdp_fd(ifindex, -1, flags);
+    if (bpf_get_link_xdp_id(ifindex, &prog_id, flags)) {
+        VLOG_WARN("get xdp program id fails");
     }
-    if (prog_id == curr_prog_id) {
-        bpf_set_link_xdp_fd(ifindex, -1, flags);
-    } else if (!curr_prog_id) {
-        VLOG_INFO("couldn't find a prog id on a given interface");
-    } else {
-        VLOG_INFO("program on interface changed, not removing");
-    }
+    bpf_set_link_xdp_fd(ifindex, -1, XDP_FLAGS_UPDATE_IF_NOEXIST);
 }
 
 void
@@ -505,6 +502,151 @@ dp_packet_cast_afxdp(const struct dp_packet *d)
 {
     ovs_assert(d->source == DPBUF_AFXDP);
     return CONTAINER_OF(d, struct dp_packet_afxdp, packet);
+}
+
+static inline void
+handle_rx_fail(struct xsk_socket_info *xsk, int rcvd, int idx_rx)
+{
+    void *elems[BATCH_SIZE];
+    int i;
+
+    for (i = 0; i < rcvd; i++) {
+        uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
+        char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
+
+        elems[i] = (void *)((uintptr_t)pkt & (~FRAME_SHIFT_MASK));
+    }
+    umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems);
+
+    xsk_ring_cons__release(&xsk->rx, rcvd);
+    xsk->rx_dropped += rcvd;
+}
+
+static inline void
+prepare_fill_queue(struct xsk_socket_info *xsk_info)
+{
+    struct umem_elem *elems[BATCH_SIZE];
+    struct xsk_umem_info *umem;
+    unsigned int idx_fq;
+    int nb_free;
+    int i, ret;
+
+    umem = xsk_info->umem;
+
+    nb_free = PROD_NUM_DESCS / 2;
+    if (xsk_prod_nb_free(&umem->fq, nb_free) < nb_free) {
+        return;
+    }
+
+    ret = umem_elem_pop_n(&umem->mpool, BATCH_SIZE, (void **)elems);
+    if (OVS_UNLIKELY(ret)) {
+        return;
+    }
+
+    if (!xsk_ring_prod__reserve(&umem->fq, BATCH_SIZE, &idx_fq)) {
+        umem_elem_push_n(&umem->mpool, BATCH_SIZE, (void **)elems);
+        return;
+    }
+
+    for (i = 0; i < BATCH_SIZE; i++) {
+        uint64_t index;
+        struct umem_elem *elem;
+
+        elem = elems[i];
+        index = (uint64_t)((char *)elem - (char *)umem->buffer);
+        ovs_assert((index & FRAME_SHIFT_MASK) == 0);
+        *xsk_ring_prod__fill_addr(&umem->fq, idx_fq) = index;
+
+        idx_fq++;
+    }
+    xsk_ring_prod__submit(&umem->fq, BATCH_SIZE);
+}
+
+int
+netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
+                      int *qfill)
+{
+    struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
+    struct netdev *netdev = rx->up.netdev;
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
+    struct xsk_socket_info *xsk_info;
+    struct xsk_umem_info *umem;
+    uint32_t idx_rx = 0;
+    int qid = rxq_->queue_id;
+    unsigned int rcvd, i;
+
+    xsk_info = dev->xsks[qid];
+    if (!xsk_info || !xsk_info->xsk) {
+        return 0;
+    }
+
+    prepare_fill_queue(xsk_info);
+
+    umem = xsk_info->umem;
+    rx->fd = xsk_socket__fd(xsk_info->xsk);
+
+    rcvd = xsk_ring_cons__peek(&xsk_info->rx, BATCH_SIZE, &idx_rx);
+    if (!rcvd) {
+        return 0;
+    }
+
+    /* Setup a dp_packet batch from descriptors in RX queue */
+    for (i = 0; i < rcvd; i++) {
+        uint64_t addr = xsk_ring_cons__rx_desc(&xsk_info->rx, idx_rx)->addr;
+        uint32_t len = xsk_ring_cons__rx_desc(&xsk_info->rx, idx_rx)->len;
+        char *pkt = xsk_umem__get_data(umem->buffer, addr);
+        uint64_t index;
+
+        struct dp_packet_afxdp *xpacket;
+        struct dp_packet *packet;
+
+        index = addr >> FRAME_SHIFT;
+        xpacket = UMEM2XPKT(umem->xpool.array, index);
+        packet = &xpacket->packet;
+
+        /* Initialize the struct dp_packet */
+        dp_packet_use_afxdp(packet, pkt, FRAME_SIZE - FRAME_HEADROOM);
+        dp_packet_set_size(packet, len);
+
+        /* Add packet into batch, increase batch->count */
+        dp_packet_batch_add(batch, packet);
+
+        idx_rx++;
+    }
+    /* Release the RX queue */
+    xsk_ring_cons__release(&xsk_info->rx, rcvd);
+
+    if (qfill) {
+        /* TODO: return the number of remaining packets in the queue. */
+        *qfill = 0;
+    }
+
+#ifdef AFXDP_DEBUG
+    log_xsk_stat(xsk_info);
+#endif
+    return 0;
+}
+
+static inline int
+kick_tx(struct xsk_socket_info *xsk_info)
+{
+    int ret;
+
+    if (!xsk_info->outstanding_tx) {
+        return 0;
+    }
+
+    /* This causes system call into kernel's xsk_sendmsg, and
+     * xsk_generic_xmit (skb mode) or xsk_async_xmit (driver mode).
+     */
+    ret = sendto(xsk_socket__fd(xsk_info->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+    if (OVS_UNLIKELY(ret < 0)) {
+        if (errno == ENXIO || errno == ENOBUFS || errno == EOPNOTSUPP) {
+            return errno;
+        }
+    }
+    /* no error, or EBUSY or EAGAIN */
+    return 0;
 }
 
 void
@@ -543,138 +685,6 @@ free_afxdp_buf_batch(struct dp_packet_batch *batch)
     dp_packet_batch_init(batch);
 }
 
-static inline void
-handle_rx_fail(struct xsk_socket_info *xsk, int rcvd, int idx_rx)
-{
-    void *elems[BATCH_SIZE];
-    int i;
-
-    for (i = 0; i < rcvd; i++) {
-        uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
-        char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
-
-        elems[i] = (void *)((uintptr_t)pkt & (~FRAME_SHIFT_MASK));
-    }
-    umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems);
-
-    xsk_ring_cons__release(&xsk->rx, rcvd);
-    xsk->rx_dropped += rcvd;
-}
-
-int
-netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
-                      int *qfill)
-{
-    struct netdev_rxq_linux *rx = netdev_rxq_linux_cast(rxq_);
-    struct netdev *netdev = rx->up.netdev;
-    struct netdev_linux *dev = netdev_linux_cast(netdev);
-    struct umem_elem *elems[BATCH_SIZE];
-    uint32_t idx_rx = 0, idx_fq = 0;
-    struct xsk_socket_info *xsk;
-    int qid = rxq_->queue_id;
-    unsigned int rcvd, i;
-    int ret = 0;
-
-    xsk = dev->xsks[qid];
-    if (!xsk) {
-        return 0;
-    }
-
-    rx->fd = xsk_socket__fd(xsk->xsk);
-
-    /* See if there is any packet on RX queue,
-     * if yes, idx_rx is the index having the packet.
-     */
-    rcvd = xsk_ring_cons__peek(&xsk->rx, BATCH_SIZE, &idx_rx);
-    if (!rcvd) {
-        return 0;
-    }
-
-    ret = umem_elem_pop_n(&xsk->umem->mpool, rcvd, (void **)elems);
-    if (OVS_UNLIKELY(ret)) {
-        handle_rx_fail(xsk, rcvd, idx_rx);
-        return ENOMEM;
-    }
-
-    /* Prepare for the FILL queue */
-    if (!xsk_ring_prod__reserve(&xsk->umem->fq, rcvd, &idx_fq)) {
-        /* The FILL queue is full, don't retry or process rx. Wait for kernel
-         * to move received packets from FILL queue to RX queue.
-         */
-        umem_elem_push_n(&xsk->umem->mpool, rcvd, (void **)elems);
-        handle_rx_fail(xsk, rcvd, idx_rx);
-        return ENOMEM;
-    }
-
-    /* Setup a dp_packet batch from descriptors in RX queue */
-    for (i = 0; i < rcvd; i++) {
-        uint64_t addr = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->addr;
-        uint32_t len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx)->len;
-        char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
-        uint64_t index;
-
-        struct dp_packet_afxdp *xpacket;
-        struct dp_packet *packet;
-
-        index = addr >> FRAME_SHIFT;
-        xpacket = UMEM2XPKT(xsk->umem->xpool.array, index);
-        packet = &xpacket->packet;
-
-        /* Initialize the struct dp_packet */
-        dp_packet_use_afxdp(packet, pkt, FRAME_SIZE - FRAME_HEADROOM);
-        dp_packet_set_size(packet, len);
-
-        /* Add packet into batch, increase batch->count */
-        dp_packet_batch_add(batch, packet);
-
-        idx_rx++;
-    }
-    /* Release the RX queue */
-    xsk_ring_cons__release(&xsk->rx, rcvd);
-
-    for (i = 0; i < rcvd; i++) {
-        uint64_t index;
-        struct umem_elem *elem;
-
-        /* Get one free umem, program it into FILL queue */
-        elem = elems[i];
-        index = (uint64_t)((char *)elem - (char *)xsk->umem->buffer);
-        ovs_assert((index & FRAME_SHIFT_MASK) == 0);
-        *xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq) = index;
-
-        idx_fq++;
-    }
-    xsk_ring_prod__submit(&xsk->umem->fq, rcvd);
-
-    if (qfill) {
-        /* TODO: return the number of remaining packets in the queue. */
-        *qfill = 0;
-    }
-
-#ifdef AFXDP_DEBUG
-    log_xsk_stat(xsk);
-#endif
-    return 0;
-}
-
-static inline int
-kick_tx(struct xsk_socket_info *xsk)
-{
-    int ret;
-
-    /* This causes system call into kernel's xsk_sendmsg, and
-     * xsk_generic_xmit (skb mode) or xsk_async_xmit (driver mode).
-     */
-    ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
-    if (OVS_UNLIKELY(ret < 0)) {
-        if (errno == ENXIO || errno == ENOBUFS || errno == EOPNOTSUPP) {
-            return errno;
-        }
-    }
-    /* no error, or EBUSY or EAGAIN */
-    return 0;
-}
-
 static inline bool
 check_free_batch(struct dp_packet_batch *batch)
 {
@@ -700,40 +710,40 @@ check_free_batch(struct dp_packet_batch *batch)
 }
 
 static inline void
-afxdp_complete_tx(struct xsk_socket_info *xsk)
+afxdp_complete_tx(struct xsk_socket_info *xsk_info)
 {
     struct umem_elem *elems_push[BATCH_SIZE];
+    struct xsk_umem_info *umem;
     uint32_t idx_cq = 0;
-    int tx_done, j, ret;
+    int tx_to_free = 0;
+    int tx_done, j;
 
-    if (!xsk->outstanding_tx) {
-        return;
-    }
-
-    ret = kick_tx(xsk);
-    if (OVS_UNLIKELY(ret)) {
-        VLOG_WARN_RL(&rl, "error sending AF_XDP packet: %s",
-                     ovs_strerror(ret));
-    }
-
-    tx_done = xsk_ring_cons__peek(&xsk->umem->cq, BATCH_SIZE, &idx_cq);
-    if (tx_done > 0) {
-        xsk_ring_cons__release(&xsk->umem->cq, tx_done);
-        xsk->outstanding_tx -= tx_done;
-    }
+    umem = xsk_info->umem;
+    tx_done = xsk_ring_cons__peek(&umem->cq, BATCH_SIZE, &idx_cq);
 
     /* Recycle back to umem pool */
     for (j = 0; j < tx_done; j++) {
         struct umem_elem *elem;
-        uint64_t addr;
+        uint64_t *addr;
 
-        addr = *xsk_ring_cons__comp_addr(&xsk->umem->cq, idx_cq++);
+        addr = (uint64_t *)xsk_ring_cons__comp_addr(&umem->cq, idx_cq++);
+        if (*addr == 0) {
+            /* The elem has been pushed already */
+            continue;
+        }
         elem = ALIGNED_CAST(struct umem_elem *,
-                            (char *)xsk->umem->buffer + addr);
-        elems_push[j] = elem;
+                            (char *)umem->buffer + *addr);
+        elems_push[tx_to_free] = elem;
+        *addr = 0; /* Mark as pushed */
+        tx_to_free++;
     }
 
-    umem_elem_push_n(&xsk->umem->mpool, tx_done, (void **)elems_push);
+    umem_elem_push_n(&umem->mpool, tx_to_free, (void **)elems_push);
+
+    if (tx_done > 0) {
+        xsk_ring_cons__release(&umem->cq, tx_done);
+        xsk_info->outstanding_tx -= tx_done;
+    }
 }
 
 int
@@ -742,40 +752,41 @@ netdev_afxdp_batch_send(struct netdev *netdev, int qid,
                         bool concurrent_txq)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
-    struct xsk_socket_info *xsk = dev->xsks[qid];
+    struct xsk_socket_info *xsk_info = dev->xsks[qid];
     struct umem_elem *elems_pop[BATCH_SIZE];
+    struct xsk_umem_info *umem;
     struct dp_packet *packet;
     bool free_batch = true;
     uint32_t idx = 0;
     int error = 0;
     int ret;
 
-    if (!xsk) {
-        goto out;
-    }
-
     if (OVS_UNLIKELY(concurrent_txq)) {
         qid = qid % dev->up.n_txq;
         ovs_spin_lock(&dev->tx_locks[qid]);
     }
 
-    /* Process CQ first. */
-    afxdp_complete_tx(xsk);
+    if (!xsk_info || !xsk_info->xsk) {
+        goto out;
+    }
+
+    afxdp_complete_tx(xsk_info);
 
     free_batch = check_free_batch(batch);
 
-    ret = umem_elem_pop_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
+    umem = xsk_info->umem;
+    ret = umem_elem_pop_n(&umem->mpool, batch->count, (void **)elems_pop);
     if (OVS_UNLIKELY(ret)) {
-        xsk->tx_dropped += batch->count;
+        xsk_info->tx_dropped += batch->count;
         error = ENOMEM;
         goto out;
     }
 
     /* Make sure we have enough TX descs */
-    ret = xsk_ring_prod__reserve(&xsk->tx, batch->count, &idx);
+    ret = xsk_ring_prod__reserve(&xsk_info->tx, batch->count, &idx);
     if (OVS_UNLIKELY(ret == 0)) {
-        umem_elem_push_n(&xsk->umem->mpool, batch->count, (void **)elems_pop);
-        xsk->tx_dropped += batch->count;
+        umem_elem_push_n(&umem->mpool, batch->count, (void **)elems_pop);
+        xsk_info->tx_dropped += batch->count;
         error = ENOMEM;
         goto out;
     }
@@ -791,15 +802,15 @@ netdev_afxdp_batch_send(struct netdev *netdev, int qid,
          */
         memcpy(elem, dp_packet_data(packet), dp_packet_size(packet));
 
-        index = (uint64_t)((char *)elem - (char *)xsk->umem->buffer);
-        xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->addr = index;
-        xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->len
+        index = (uint64_t)((char *)elem - (char *)umem->buffer);
+        xsk_ring_prod__tx_desc(&xsk_info->tx, idx + i)->addr = index;
+        xsk_ring_prod__tx_desc(&xsk_info->tx, idx + i)->len
             = dp_packet_size(packet);
     }
-    xsk_ring_prod__submit(&xsk->tx, batch->count);
-    xsk->outstanding_tx += batch->count;
+    xsk_ring_prod__submit(&xsk_info->tx, batch->count);
+    xsk_info->outstanding_tx += batch->count;
 
-    ret = kick_tx(xsk);
+    ret = kick_tx(xsk_info);
     if (OVS_UNLIKELY(ret)) {
         VLOG_WARN_RL(&rl, "error sending AF_XDP packet: %s",
                      ovs_strerror(ret));
@@ -842,8 +853,8 @@ netdev_afxdp_get_stats(const struct netdev *netdev,
                        struct netdev_stats *stats)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
+    struct xsk_socket_info *xsk_info;
     struct netdev_stats dev_stats;
-    struct xsk_socket_info *xsk;
     int error, i;
 
     ovs_mutex_lock(&dev->mutex);
@@ -878,10 +889,10 @@ netdev_afxdp_get_stats(const struct netdev *netdev,
 
         /* Account the dropped in each xsk */
         for (i = 0; i < netdev_n_rxq(netdev); i++) {
-            xsk = dev->xsks[i];
-            if (xsk) {
-                stats->rx_dropped += xsk->rx_dropped;
-                stats->tx_dropped += xsk->tx_dropped;
+            xsk_info = dev->xsks[i];
+            if (xsk_info) {
+                stats->rx_dropped += xsk_info->rx_dropped;
+                stats->tx_dropped += xsk_info->tx_dropped;
             }
         }
     }
