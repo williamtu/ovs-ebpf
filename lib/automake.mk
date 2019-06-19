@@ -14,6 +14,10 @@ if WIN32
 lib_libopenvswitch_la_LIBADD += ${PTHREAD_LIBS}
 endif
 
+if HAVE_AF_XDP
+lib_libopenvswitch_la_LIBADD += $(LIBBPF_LDADD)
+endif
+
 lib_libopenvswitch_la_LDFLAGS = \
         $(OVS_LTINFO) \
         -Wl,--version-script=$(top_builddir)/lib/libopenvswitch.sym \
@@ -394,6 +398,7 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/if-notifier.h \
 	lib/netdev-linux.c \
 	lib/netdev-linux.h \
+	lib/netdev-linux-private.h \
 	lib/netdev-offload-tc.c \
 	lib/netlink-conntrack.c \
 	lib/netlink-conntrack.h \
@@ -408,6 +413,14 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/route-table.h \
 	lib/tc.c \
 	lib/tc.h
+endif
+
+if HAVE_AF_XDP
+lib_libopenvswitch_la_SOURCES += \
+	lib/xdpsock.c \
+	lib/xdpsock.h \
+	lib/netdev-afxdp.c \
+	lib/netdev-afxdp.h
 endif
 
 if DPDK_NETDEV
