@@ -181,14 +181,13 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
         return NULL;
     }
 
-    /* Populate (PROD_NUM_DESCS - BATCH_SIZE) elems to the FILL queue */
     while (!xsk_ring_prod__reserve(&xsk->umem->fq,
-                                   PROD_NUM_DESCS - BATCH_SIZE, &idx)) {
+                                   PROD_NUM_DESCS, &idx)) {
         VLOG_WARN_RL(&rl, "Retry xsk_ring_prod__reserve to FILL queue");
     }
 
     for (i = 0;
-         i < (PROD_NUM_DESCS - BATCH_SIZE) * FRAME_SIZE;
+         i < PROD_NUM_DESCS * FRAME_SIZE;
          i += FRAME_SIZE) {
         struct umem_elem *elem;
         uint64_t addr;
@@ -200,7 +199,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     }
 
     xsk_ring_prod__submit(&xsk->umem->fq,
-                          PROD_NUM_DESCS - BATCH_SIZE);
+                          PROD_NUM_DESCS);
     return xsk;
 }
 
