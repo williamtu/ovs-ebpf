@@ -17,6 +17,8 @@
 #ifndef OPENVSWITCH_THREAD_H
 #define OPENVSWITCH_THREAD_H 1
 
+#include <config.h>
+
 #include <pthread.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -32,6 +34,13 @@ struct OVS_LOCKABLE ovs_mutex {
     pthread_mutex_t lock;
     const char *where;          /* NULL if and only if uninitialized. */
 };
+
+#ifdef HAVE_PTHREAD_SPIN_LOCK
+struct OVS_LOCKABLE ovs_spin {
+    pthread_spinlock_t lock;
+    const char *where;          /* NULL if and only if uninitialized. */
+};
+#endif
 
 /* "struct ovs_mutex" initializer. */
 #ifdef PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP
@@ -70,6 +79,21 @@ int ovs_mutex_trylock_at(const struct ovs_mutex *mutex, const char *where)
 
 void ovs_mutex_cond_wait(pthread_cond_t *, const struct ovs_mutex *mutex)
     OVS_REQUIRES(mutex);
+
+#ifdef HAVE_PTHREAD_SPIN_LOCK
+void ovs_spin_init(const struct ovs_spin *);
+void ovs_spin_destroy(const struct ovs_spin *);
+void ovs_spin_unlock(const struct ovs_spin *spin) OVS_RELEASES(spin);
+void ovs_spin_lock_at(const struct ovs_spin *spin, const char *where)
+    OVS_ACQUIRES(spin);
+#define ovs_spin_lock(spin) \
+        ovs_spin_lock_at(spin, OVS_SOURCE_LOCATOR)
+
+int ovs_spin_trylock_at(const struct ovs_spin *spin, const char *where)
+    OVS_TRY_LOCK(0, spin);
+#define ovs_spin_trylock(spin) \
+        ovs_spin_trylock_at(spin, OVS_SOURCE_LOCATOR)
+#endif
 
 /* Convenient once-only execution.
  *
