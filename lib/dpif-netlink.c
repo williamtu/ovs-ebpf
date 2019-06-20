@@ -699,7 +699,7 @@ get_vport_type(const struct dpif_netlink_vport *vport)
         return "ip6erspan"; 
 
     case OVS_VPORT_TYPE_IP6GRE:
-        return "ip6gre";
+        return "ip6gretap";
 
     case OVS_VPORT_TYPE_UNSPEC:
     case __OVS_VPORT_TYPE_MAX:
@@ -730,6 +730,8 @@ netdev_to_ovs_vport_type(const char *type)
         return OVS_VPORT_TYPE_ERSPAN;
     } else if (!strcmp(type, "ip6erspan")) {
         return OVS_VPORT_TYPE_IP6ERSPAN;
+    } else if (!strcmp(type, "ip6gretap")) {
+        return OVS_VPORT_TYPE_IP6GRE;
     } else if (!strcmp(type, "ip6gre")) {
         return OVS_VPORT_TYPE_IP6GRE;
     } else if (!strcmp(type, "gre")) {

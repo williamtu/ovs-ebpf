@@ -172,7 +172,8 @@ tnl_type_to_nw_proto(const char type[])
         return IPPROTO_TCP;
     }
     if (!strcmp(type, "gre") || !strcmp(type, "erspan") ||
-        !strcmp(type, "ip6erspan") || !strcmp(type, "ip6gre")) {
+        !strcmp(type, "ip6erspan") || !strcmp(type, "ip6gre") ||
+        !strcmp(type, "ip6gretap")) {
         return IPPROTO_GRE;
     }
     if (!strcmp(type, "vxlan")) {

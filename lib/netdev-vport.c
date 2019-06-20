@@ -1212,10 +1212,10 @@ netdev_vport_tunnel_register(void)
           },
           {{NULL, NULL, 0, 0}}
         },
-        { "ip6gre_sys",
+        { "ip6gretap_sys",
           {
               TUNNEL_FUNCTIONS_COMMON,
-              .type = "ip6gre",
+              .type = "ip6gretap",
               .build_header = netdev_gre_build_header,
               .push_header = netdev_gre_push_header,
               .pop_header = netdev_gre_pop_header

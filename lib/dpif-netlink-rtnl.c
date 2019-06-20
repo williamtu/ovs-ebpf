@@ -104,7 +104,7 @@ vport_type_to_kind(enum ovs_vport_type type,
     case OVS_VPORT_TYPE_IP6ERSPAN:
         return "ip6erspan";
     case OVS_VPORT_TYPE_IP6GRE:
-        return "ip6gre";
+        return "ip6gretap";
     case OVS_VPORT_TYPE_NETDEV:
     case OVS_VPORT_TYPE_INTERNAL:
     case OVS_VPORT_TYPE_LISP:
