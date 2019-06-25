@@ -326,7 +326,6 @@ check-system-userspace: all
 	"$$@" $(TESTSUITEFLAGS) -j1 || (test X'$(RECHECK)' = Xyes && "$$@" --recheck)
 
 check-afxdp: all
-	$(MAKE) install
 	set $(SHELL) '$(SYSTEM_AFXDP_TESTSUITE)' -C tests  AUTOTEST_PATH='$(AUTOTEST_PATH)' $(TESTSUITEFLAGS) -j1; \
 	"$$@" || (test X'$(RECHECK)' = Xyes && "$$@" --recheck)
 
