@@ -163,6 +163,7 @@ SYSTEM_USERSPACE_TESTSUITE_AT = \
 	tests/system-userspace-packet-type-aware.at
 
 SYSTEM_AFXDP_TESTSUITE_AT = \
+	tests/system-userspace-macros.at \
 	tests/system-afxdp-testsuite.at \
 	tests/system-afxdp-macros.at
 
