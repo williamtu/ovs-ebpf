@@ -65,10 +65,11 @@ dp_packet_use(struct dp_packet *b, void *base, size_t allocated)
  * memory starting at AF_XDP umem base.
  */
 void
-dp_packet_use_afxdp(struct dp_packet *b, void *base, size_t allocated)
+dp_packet_use_afxdp(struct dp_packet *b, void *data, size_t allocated,
+                    size_t headroom)
 {
-    dp_packet_set_base(b, base);
-    dp_packet_set_data(b, base);
+    dp_packet_set_base(b, (char *)data - headroom);
+    dp_packet_set_data(b, data);
     dp_packet_set_size(b, 0);
 
     dp_packet_set_allocated(b, allocated);

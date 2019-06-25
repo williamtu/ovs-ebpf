@@ -67,14 +67,20 @@ static void xsk_destroy_all(struct netdev *netdev);
 static struct xsk_umem_info *
 xsk_configure_umem(void *buffer, uint64_t size, int xdpmode)
 {
-    struct xsk_umem_config uconfig OVS_UNUSED;
+    struct xsk_umem_config uconfig;
     struct xsk_umem_info *umem;
     int ret;
     int i;
 
     umem = xcalloc(1, sizeof *umem);
+
+    uconfig.fill_size = PROD_NUM_DESCS;
+    uconfig.comp_size = CONS_NUM_DESCS;
+    uconfig.frame_size = FRAME_SIZE;
+    uconfig.frame_headroom = OVS_XDP_HEADROOM;
+
     ret = xsk_umem__create(&umem->umem, buffer, size, &umem->fq, &umem->cq,
-                           NULL);
+                           &uconfig);
     if (ret) {
         VLOG_ERR("xsk_umem__create failed (%s) mode: %s",
                  ovs_strerror(errno),
@@ -591,7 +597,9 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
         packet = &xpacket->packet;
 
         /* Initialize the struct dp_packet */
-        dp_packet_use_afxdp(packet, pkt, FRAME_SIZE - FRAME_HEADROOM);
+        dp_packet_use_afxdp(packet, pkt,
+                            FRAME_SIZE - FRAME_HEADROOM,
+                            OVS_XDP_HEADROOM);
         dp_packet_set_size(packet, len);
 
         /* Add packet into batch, increase batch->count */
