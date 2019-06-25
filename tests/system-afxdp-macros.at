@@ -21,3 +21,12 @@ m4_define([ADD_VETH],
 
 m4_define([OVS_CHECK_8021AD],
     [AT_SKIP_IF([:])])
+
+# CONFIGURE_VETH_OFFLOADS([VETH])
+#
+# Disable TX offloads and VLAN offloads for veths used in AF_XDP.
+m4_define([CONFIGURE_VETH_OFFLOADS],
+    [AT_CHECK([ethtool -K $1 tx off], [0], [ignore], [ignore])
+     AT_CHECK([ethtool -K $1 txvlan off], [0], [ignore], [ignore])
+    ]
+)
