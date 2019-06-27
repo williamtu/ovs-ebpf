@@ -272,6 +272,7 @@ xsk_configure_all(struct netdev *netdev)
         dev->xsks[i] = xsk_info;
         xsk_info->rx_dropped = 0;
         xsk_info->tx_dropped = 0;
+        xsk_info->outstanding_tx = 0;
     }
 
     return 0;
@@ -519,13 +520,11 @@ prepare_fill_queue(struct xsk_socket_info *xsk_info)
     struct umem_elem *elems[BATCH_SIZE];
     struct xsk_umem_info *umem;
     unsigned int idx_fq;
-    int nb_free;
     int i, ret;
 
     umem = xsk_info->umem;
 
-    nb_free = PROD_NUM_DESCS / 2;
-    if (xsk_prod_nb_free(&umem->fq, nb_free) < nb_free) {
+    if (xsk_prod_nb_free(&umem->fq, BATCH_SIZE) < BATCH_SIZE) {
         return;
     }
 
@@ -579,7 +578,7 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 
     rcvd = xsk_ring_cons__peek(&xsk_info->rx, BATCH_SIZE, &idx_rx);
     if (!rcvd) {
-        return 0;
+        return EAGAIN;
     }
 
     /* Setup a dp_packet batch from descriptors in RX queue */
@@ -668,13 +667,12 @@ free_afxdp_buf_batch(struct dp_packet_batch *batch)
     uintptr_t addr;
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
-        xpacket = dp_packet_cast_afxdp(packet);
-        if (xpacket->mpool) {
-            void *base = dp_packet_base(packet);
+        void *base;
 
-            addr = (uintptr_t)base & (~FRAME_SHIFT_MASK);
-            elems[i] = (void *)addr;
-        }
+        xpacket = dp_packet_cast_afxdp(packet);
+        base = dp_packet_base(packet);
+        addr = (uintptr_t)base & (~FRAME_SHIFT_MASK);
+        elems[i] = (void *)addr;
     }
     umem_elem_push_n(xpacket->mpool, batch->count, elems);
     dp_packet_batch_init(batch);
@@ -722,14 +720,14 @@ afxdp_complete_tx(struct xsk_socket_info *xsk_info)
         uint64_t *addr;
 
         addr = (uint64_t *)xsk_ring_cons__comp_addr(&umem->cq, idx_cq++);
-        if (*addr == 0) {
+        if (*addr == UINT64_MAX) {
             /* The elem has been pushed already */
             continue;
         }
         elem = ALIGNED_CAST(struct umem_elem *,
                             (char *)umem->buffer + *addr);
         elems_push[tx_to_free] = elem;
-        *addr = 0; /* Mark as pushed */
+        *addr = UINT64_MAX; /* Mark as pushed */
         tx_to_free++;
     }
 
@@ -737,10 +735,10 @@ afxdp_complete_tx(struct xsk_socket_info *xsk_info)
 
     if (tx_done > 0) {
         xsk_ring_cons__release(&umem->cq, tx_done);
-        xsk_info->outstanding_tx -= tx_done;
     } else {
         COVERAGE_INC(afxdp_cq_empty);
     }
+    xsk_info->outstanding_tx -= tx_to_free;
 }
 
 int
