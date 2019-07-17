@@ -52,15 +52,14 @@ BUILD_ASSERT_DECL(IS_POW2(NUM_FRAMES));
 BUILD_ASSERT_DECL(PROD_NUM_DESCS == CONS_NUM_DESCS);
 BUILD_ASSERT_DECL(NUM_FRAMES == 4 * (PROD_NUM_DESCS + CONS_NUM_DESCS));
 
-/* LIFO ptr_array */
+/* LIFO ptr_array. */
 struct umem_pool {
-    int index;      /* point to top */
+    int index;      /* Point to top. */
     unsigned int size;
     struct ovs_spin lock;
-    void **array;   /* a pointer array, point to umem buf */
+    void **array;   /* A pointer array pointing to umem buf. */
 };
 
-/* array-based dp_packet_afxdp */
 struct xpacket_pool {
     unsigned int size;
     struct dp_packet_afxdp **array;

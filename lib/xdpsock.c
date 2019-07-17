@@ -29,7 +29,7 @@ __umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
     void *ptr;
 
     if (OVS_UNLIKELY(umemp->index + n > umemp->size)) {
-        OVS_NOT_REACHED();
+        ovs_assert(false);
     }
 
     ptr = &umemp->array[umemp->index];
@@ -47,8 +47,8 @@ void umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs)
 static inline void
 __umem_elem_push(struct umem_pool *umemp, void *addr)
 {
-    if (OVS_UNLIKELY(umemp->index + 1) > umemp->size) {
-        OVS_NOT_REACHED();
+    if (OVS_UNLIKELY(umemp->index + 1 > umemp->size)) {
+        ovs_assert(false);
     }
 
     umemp->array[umemp->index++] = addr;
@@ -120,8 +120,8 @@ __umem_pool_alloc(unsigned int size)
 {
     void *bufs;
 
-    bufs = xmalloc_pagealign(size * sizeof(void *));
-    memset(bufs, 0, size * sizeof(void *));
+    bufs = xmalloc_pagealign(size * sizeof bufs);
+    memset(bufs, 0, size * sizeof bufs);
 
     return (void **)bufs;
 }
@@ -145,6 +145,7 @@ umem_pool_cleanup(struct umem_pool *umemp)
 {
     free_pagealign(umemp->array);
     umemp->array = NULL;
+    ovs_spin_destroy(&umemp->lock);
 }
 
 unsigned int
@@ -153,7 +154,7 @@ umem_pool_count(struct umem_pool *umemp)
     return umemp->index;
 }
 
-/* AF_XDP metadata init/destroy */
+/* AF_XDP metadata init/destroy. */
 int
 xpacket_pool_init(struct xpacket_pool *xp, unsigned int size)
 {

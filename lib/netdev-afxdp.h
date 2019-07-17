@@ -67,7 +67,7 @@ struct dp_packet;
 static inline void
 free_afxdp_buf(struct dp_packet *p OVS_UNUSED)
 {
-    /* Nothing */
+    /* Nothing. */
 }
 
 #endif /* HAVE_AF_XDP */

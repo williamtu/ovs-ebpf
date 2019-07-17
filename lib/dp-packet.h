@@ -43,7 +43,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
     DPBUF_DPDK,                /* buffer data is from DPDK allocated memory.
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
-    DPBUF_AFXDP,               /* buffer data from XDP frame */
+    DPBUF_AFXDP,               /* Buffer data from XDP frame. */
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64

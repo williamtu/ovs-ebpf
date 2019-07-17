@@ -37,9 +37,6 @@
 #include "timer.h"
 #include "xdpsock.h"
 
-/* These functions are Linux specific, so they should be used directly only by
- * Linux-specific code. */
-
 struct netdev;
 
 struct netdev_rxq_linux {
@@ -49,9 +46,6 @@ struct netdev_rxq_linux {
 };
 
 void netdev_linux_run(const struct netdev_class *);
-
-int netdev_linux_ethtool_set_flag(struct netdev *netdev, uint32_t flag,
-                                  const char *flag_name, bool enable);
 
 int get_stats_via_netlink(const struct netdev *netdev_,
                           struct netdev_stats *stats);
@@ -103,13 +97,13 @@ struct netdev_linux {
     /* LAG information. */
     bool is_lag_master;         /* True if the netdev is a LAG master. */
 
-    /* AF_XDP information */
 #ifdef HAVE_AF_XDP
+    /* AF_XDP information. */
     struct xsk_socket_info **xsks;
     int requested_n_rxq;
-    int xdpmode;
+    int xdpmode;                /* AF_XDP running mode: driver or skb. */
     int requested_xdpmode;
-    struct ovs_spin *tx_locks;
+    struct ovs_spin *tx_locks;  /* spin lock array for TX queues. */
 #endif
 };
 
