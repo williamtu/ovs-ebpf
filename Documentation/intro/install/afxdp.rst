@@ -154,12 +154,13 @@ To kick start end-to-end autotesting::
 
 .. note::
    Not all test cases pass at this time. Currenly all TCP related
-   tests, ex: wget or http, fail due to veth XDP limitations, and
-   cvlan is skipped now.
+   tests, ex: using wget or http, are skipped due to XDP limitations
+   on veth. cvlan test is also skipped.
 
 If a test case fails, check the log at::
 
-  cat tests/system-afxdp-testsuite.dir/001/system-afxdp-testsuite.log
+  cat \
+  tests/system-afxdp-testsuite.dir/<test num>/system-afxdp-testsuite.log
 
 
 Setup AF_XDP netdev
