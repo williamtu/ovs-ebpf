@@ -77,6 +77,25 @@ static struct ovs_mutex unused_pools_mutex = OVS_MUTEX_INITIALIZER;
 static struct ovs_list unused_pools OVS_GUARDED_BY(unused_pools_mutex) =
     OVS_LIST_INITIALIZER(&unused_pools);
 
+struct xsk_umem_info {
+    struct umem_pool mpool;
+    struct xpacket_pool xpool;
+    struct xsk_ring_prod fq;
+    struct xsk_ring_cons cq;
+    struct xsk_umem *umem;
+    void *buffer;
+};
+
+struct xsk_socket_info {
+    struct xsk_ring_cons rx;
+    struct xsk_ring_prod tx;
+    struct xsk_umem_info *umem;
+    struct xsk_socket *xsk;
+    uint32_t outstanding_tx; /* Number of descriptors filled in tx and cq. */
+    uint32_t available_rx;   /* Number of descriptors filled in rx and fq. */
+    atomic_uint64_t tx_dropped;
+};
+
 static void
 netdev_afxdp_cleanup_unused_pool(struct unused_pool *pool)
 {

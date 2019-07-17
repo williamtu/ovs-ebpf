@@ -19,6 +19,10 @@
 #include "dp-packet.h"
 #include "openvswitch/compiler.h"
 
+BUILD_ASSERT_DECL(IS_POW2(NUM_FRAMES));
+BUILD_ASSERT_DECL(PROD_NUM_DESCS == CONS_NUM_DESCS);
+BUILD_ASSERT_DECL(NUM_FRAMES == 4 * (PROD_NUM_DESCS + CONS_NUM_DESCS));
+
 /* Note:
  * umem_elem_push* shouldn't overflow because we always pop
  * elem first, then push back to the stack.
@@ -57,9 +61,6 @@ __umem_elem_push(struct umem_pool *umemp, void *addr)
 void
 umem_elem_push(struct umem_pool *umemp, void *addr)
 {
-
-    ovs_assert(((uint64_t)addr & FRAME_SHIFT_MASK) == 0);
-
     ovs_spin_lock(&umemp->lock);
     __umem_elem_push(umemp, addr);
     ovs_spin_unlock(&umemp->lock);

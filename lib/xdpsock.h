@@ -48,10 +48,6 @@
 
 #define BATCH_SIZE      NETDEV_MAX_BURST
 
-BUILD_ASSERT_DECL(IS_POW2(NUM_FRAMES));
-BUILD_ASSERT_DECL(PROD_NUM_DESCS == CONS_NUM_DESCS);
-BUILD_ASSERT_DECL(NUM_FRAMES == 4 * (PROD_NUM_DESCS + CONS_NUM_DESCS));
-
 /* LIFO ptr_array. */
 struct umem_pool {
     int index;      /* Point to top. */
@@ -60,28 +56,10 @@ struct umem_pool {
     void **array;   /* A pointer array pointing to umem buf. */
 };
 
+/* Array-based dp_packet_afxdp. */
 struct xpacket_pool {
     unsigned int size;
     struct dp_packet_afxdp **array;
-};
-
-struct xsk_umem_info {
-    struct umem_pool mpool;
-    struct xpacket_pool xpool;
-    struct xsk_ring_prod fq;
-    struct xsk_ring_cons cq;
-    struct xsk_umem *umem;
-    void *buffer;
-};
-
-struct xsk_socket_info {
-    struct xsk_ring_cons rx;
-    struct xsk_ring_prod tx;
-    struct xsk_umem_info *umem;
-    struct xsk_socket *xsk;
-    uint32_t outstanding_tx; /* Number of descriptors filled in tx and cq. */
-    uint32_t available_rx;   /* Number of descriptors filled in rx and fq. */
-    atomic_ulong tx_dropped;
 };
 
 struct umem_elem {
