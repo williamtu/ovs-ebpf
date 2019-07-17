@@ -9,13 +9,10 @@ lib_LTLIBRARIES += lib/libopenvswitch.la
 
 lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)
 lib_libopenvswitch_la_LIBADD += $(CAPNG_LDADD)
+lib_libopenvswitch_la_LIBADD += $(LIBBPF_LDADD)
 
 if WIN32
 lib_libopenvswitch_la_LIBADD += ${PTHREAD_LIBS}
-endif
-
-if HAVE_AF_XDP
-lib_libopenvswitch_la_LIBADD += $(LIBBPF_LDADD)
 endif
 
 lib_libopenvswitch_la_LDFLAGS = \

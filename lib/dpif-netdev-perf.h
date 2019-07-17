@@ -198,9 +198,7 @@ rdtsc_syscall(struct pmd_perf_stats *s)
        return s->last_tsc;
     }
 
-    v  = (uint64_t) val.tv_sec * 1000000000LL;
-    v += (uint64_t) val.tv_nsec;
-
+    v  = val.tv_sec * UINT64_C(1000000000) + val.tv_nsec;
     return s->last_tsc = v;
 }
 #endif

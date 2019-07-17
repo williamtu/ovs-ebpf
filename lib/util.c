@@ -272,7 +272,7 @@ xmalloc_size_align(size_t size, size_t alignment)
      * So ROUND_UP when xmalloc above, and ROUND_UP again when calculate 'r'
      * below.
      */
-    r = (void *) ROUND_UP((uintptr_t) p + (runt ? : 0), alignment);
+    r = (void *) ROUND_UP((uintptr_t) p + (runt ? alignment : 0), alignment);
     q = (void **) r - 1;
     *q = p;
 
