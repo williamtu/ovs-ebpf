@@ -62,10 +62,6 @@ struct xpacket_pool {
     struct dp_packet_afxdp **array;
 };
 
-struct umem_elem {
-    struct umem_elem *next;
-};
-
 void umem_elem_push(struct umem_pool *umemp, void *addr);
 void umem_elem_push_n(struct umem_pool *umemp, int n, void **addrs);
 

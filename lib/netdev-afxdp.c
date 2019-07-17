@@ -175,10 +175,9 @@ xsk_configure_umem(void *buffer, uint64_t size, int xdpmode)
     }
 
     for (i = NUM_FRAMES - 1; i >= 0; i--) {
-        struct umem_elem *elem;
+        void *elem;
 
-        elem = ALIGNED_CAST(struct umem_elem *,
-                            (char *)umem->buffer + i * FRAME_SIZE);
+        elem = ALIGNED_CAST(void *, (char *)umem->buffer + i * FRAME_SIZE);
         umem_elem_push(&umem->mpool, elem);
     }
 
@@ -272,7 +271,7 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     for (i = 0;
          i < PROD_NUM_DESCS * FRAME_SIZE;
          i += FRAME_SIZE) {
-        struct umem_elem *elem;
+        void *elem;
         uint64_t addr;
 
         elem = umem_elem_pop(&xsk->umem->mpool);
@@ -585,8 +584,8 @@ dp_packet_cast_afxdp(const struct dp_packet *d)
 static inline void
 prepare_fill_queue(struct xsk_socket_info *xsk_info)
 {
-    struct umem_elem *elems[BATCH_SIZE];
     struct xsk_umem_info *umem;
+    void *elems[BATCH_SIZE];
     unsigned int idx_fq;
     int i, ret;
 
@@ -596,20 +595,20 @@ prepare_fill_queue(struct xsk_socket_info *xsk_info)
         return;
     }
 
-    ret = umem_elem_pop_n(&umem->mpool, BATCH_SIZE, (void **)elems);
+    ret = umem_elem_pop_n(&umem->mpool, BATCH_SIZE, elems);
     if (OVS_UNLIKELY(ret)) {
         return;
     }
 
     if (!xsk_ring_prod__reserve(&umem->fq, BATCH_SIZE, &idx_fq)) {
-        umem_elem_push_n(&umem->mpool, BATCH_SIZE, (void **)elems);
+        umem_elem_push_n(&umem->mpool, BATCH_SIZE, elems);
         COVERAGE_INC(afxdp_fq_full);
         return;
     }
 
     for (i = 0; i < BATCH_SIZE; i++) {
         uint64_t index;
-        struct umem_elem *elem;
+        void *elem;
 
         elem = elems[i];
         index = (uint64_t)((char *)elem - (char *)umem->buffer);
@@ -787,7 +786,7 @@ check_free_batch(struct dp_packet_batch *batch)
 static inline void
 afxdp_complete_tx(struct xsk_socket_info *xsk_info)
 {
-    struct umem_elem *elems_push[BATCH_SIZE];
+    void *elems_push[BATCH_SIZE];
     struct xsk_umem_info *umem;
     uint32_t idx_cq = 0;
     int tx_to_free = 0;
@@ -798,8 +797,8 @@ afxdp_complete_tx(struct xsk_socket_info *xsk_info)
 
     /* Recycle back to umem pool. */
     for (j = 0; j < tx_done; j++) {
-        struct umem_elem *elem;
         uint64_t *addr;
+        void *elem;
 
         addr = (uint64_t *)xsk_ring_cons__comp_addr(&umem->cq, idx_cq++);
         if (*addr == UINT64_MAX) {
@@ -807,14 +806,13 @@ afxdp_complete_tx(struct xsk_socket_info *xsk_info)
             COVERAGE_INC(afxdp_cq_skip);
             continue;
         }
-        elem = ALIGNED_CAST(struct umem_elem *,
-                            (char *)umem->buffer + *addr);
+        elem = ALIGNED_CAST(void *, (char *)umem->buffer + *addr);
         elems_push[tx_to_free] = elem;
         *addr = UINT64_MAX; /* Mark as pushed. */
         tx_to_free++;
 
         if (tx_to_free == BATCH_SIZE || j == tx_done - 1) {
-            umem_elem_push_n(&umem->mpool, tx_to_free, (void **)elems_push);
+            umem_elem_push_n(&umem->mpool, tx_to_free, elems_push);
             xsk_info->outstanding_tx -= tx_to_free;
             tx_to_free = 0;
         }
@@ -832,8 +830,8 @@ __netdev_afxdp_batch_send(struct netdev *netdev, int qid,
                         struct dp_packet_batch *batch)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
-    struct umem_elem *elems_pop[BATCH_SIZE];
     struct xsk_socket_info *xsk_info;
+    void *elems_pop[BATCH_SIZE];
     struct xsk_umem_info *umem;
     struct dp_packet *packet;
     bool free_batch = false;
@@ -852,7 +850,7 @@ __netdev_afxdp_batch_send(struct netdev *netdev, int qid,
     free_batch = check_free_batch(batch);
 
     umem = xsk_info->umem;
-    ret = umem_elem_pop_n(&umem->mpool, batch->count, (void **)elems_pop);
+    ret = umem_elem_pop_n(&umem->mpool, batch->count, elems_pop);
     if (OVS_UNLIKELY(ret)) {
         atomic_add_relaxed(&xsk_info->tx_dropped, batch->count, &orig);
         VLOG_WARN_RL(&rl, "%s: send failed due to exhausted memory pool.",
@@ -864,7 +862,7 @@ __netdev_afxdp_batch_send(struct netdev *netdev, int qid,
     /* Make sure we have enough TX descs. */
     ret = xsk_ring_prod__reserve(&xsk_info->tx, batch->count, &idx);
     if (OVS_UNLIKELY(ret == 0)) {
-        umem_elem_push_n(&umem->mpool, batch->count, (void **)elems_pop);
+        umem_elem_push_n(&umem->mpool, batch->count, elems_pop);
         atomic_add_relaxed(&xsk_info->tx_dropped, batch->count, &orig);
         COVERAGE_INC(afxdp_tx_full);
         afxdp_complete_tx(xsk_info);
@@ -874,8 +872,8 @@ __netdev_afxdp_batch_send(struct netdev *netdev, int qid,
     }
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
-        struct umem_elem *elem;
         uint64_t index;
+        void *elem;
 
         elem = elems_pop[i];
         /* Copy the packet to the umem we just pop from umem pool.
