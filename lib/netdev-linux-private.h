@@ -30,12 +30,12 @@
 #include <stdbool.h>
 
 #include "netdev-afxdp.h"
+#include "netdev-afxdp-pool.h"
 #include "netdev-provider.h"
 #include "netdev-vport.h"
 #include "openvswitch/thread.h"
 #include "ovs-atomic.h"
 #include "timer.h"
-#include "xdpsock.h"
 
 struct netdev;
 

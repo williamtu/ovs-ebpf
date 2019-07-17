@@ -19,6 +19,7 @@
 #include "netdev-linux-private.h"
 #include "netdev-linux.h"
 #include "netdev-afxdp.h"
+#include "netdev-afxdp-pool.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -41,7 +42,6 @@
 #include "packets.h"
 #include "socket-util.h"
 #include "util.h"
-#include "xdpsock.h"
 
 #ifndef SOL_XDP
 #define SOL_XDP 283

@@ -417,8 +417,8 @@ endif
 
 if HAVE_AF_XDP
 lib_libopenvswitch_la_SOURCES += \
-	lib/xdpsock.c \
-	lib/xdpsock.h \
+	lib/netdev-afxdp-pool.c \
+	lib/netdev-afxdp-pool.h \
 	lib/netdev-afxdp.c \
 	lib/netdev-afxdp.h
 endif

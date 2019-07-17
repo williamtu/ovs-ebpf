@@ -15,8 +15,8 @@
  */
 #include <config.h>
 
-#include "xdpsock.h"
 #include "dp-packet.h"
+#include "netdev-afxdp-pool.h"
 #include "openvswitch/compiler.h"
 
 BUILD_ASSERT_DECL(IS_POW2(NUM_FRAMES));
