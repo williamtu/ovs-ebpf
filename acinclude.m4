@@ -262,9 +262,6 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
     AC_CHECK_HEADER([bpf/xsk.h], [],
       [AC_MSG_ERROR([unable to find bpf/xsk.h for AF_XDP support])])
 
-    AC_CHECK_HEADER([bpf/libbpf_util.h], [],
-      [AC_MSG_ERROR([unable to find bpf/libbpf_util.h for AF_XDP support])])
-
     AC_CHECK_FUNCS([pthread_spin_lock], [],
       [AC_MSG_ERROR([unable to find pthread_spin_lock for AF_XDP support])])
 
