@@ -267,7 +267,7 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
 
     AC_DEFINE([HAVE_AF_XDP], [1],
               [Define to 1 if AF_XDP support is available and enabled.])
-    LIBBPF_LDADD=" -lbpf -lelf"
+    LIBBPF_LDADD=" -lbpf -lelf -lmemif"
     AC_SUBST([LIBBPF_LDADD])
   fi
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)

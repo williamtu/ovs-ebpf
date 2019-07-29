@@ -3305,6 +3305,8 @@ const struct netdev_class netdev_afxdp_class = {
     .rxq_recv = netdev_afxdp_rxq_recv,
 };
 #endif
+
+
 
 
 #define CODEL_N_QUEUES 0x0000

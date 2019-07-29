@@ -419,7 +419,9 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/netdev-afxdp-pool.c \
 	lib/netdev-afxdp-pool.h \
 	lib/netdev-afxdp.c \
-	lib/netdev-afxdp.h
+	lib/netdev-afxdp.h \
+	lib/netdev-memif.c \
+	lib/netdev-memif.h
 endif
 
 if DPDK_NETDEV

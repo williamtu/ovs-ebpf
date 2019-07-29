@@ -60,6 +60,8 @@
 #include "tc.h"
 #endif
 
+void netdev_memif_register(void);
+
 VLOG_DEFINE_THIS_MODULE(netdev);
 
 COVERAGE_DEFINE(netdev_received);
@@ -143,6 +145,7 @@ netdev_initialize(void)
 
         netdev_vport_patch_register();
 
+        netdev_memif_register();
 #ifdef __linux__
         netdev_register_provider(&netdev_linux_class);
         netdev_register_provider(&netdev_internal_class);
