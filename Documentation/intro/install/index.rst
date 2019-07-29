@@ -46,6 +46,7 @@ Installation from Source
    userspace
    dpdk
    afxdp
+   memif
 
 Installation from Packages
 --------------------------

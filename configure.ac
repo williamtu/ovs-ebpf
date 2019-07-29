@@ -101,6 +101,7 @@ OVS_CHECK_DOT
 OVS_CHECK_IF_DL
 OVS_CHECK_STRTOK_R
 OVS_CHECK_LINUX_AF_XDP
+OVS_CHECK_LINUX_MEMIF
 AC_CHECK_DECLS([sys_siglist], [], [], [[#include <signal.h>]])
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
