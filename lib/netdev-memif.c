@@ -11,11 +11,13 @@
 #include "openvswitch/vlog.h"
 #include "netdev-provider.h"
 #include "netdev-memif.h"
+#include "ovs-thread.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_memif);
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
+#define MAX_MEMIF_BUFS 256
 #define MAX_CONNS 32
 
 static struct ovsthread_once memif_thread_once
@@ -196,7 +198,7 @@ memif_thread(void *f_)
         timespec_get(&start, TIME_UTC);
         if (en < 0) {
             VLOG_INFO("epoll_pwait: %s", ovs_strerror(errno));
-            return -1;
+            return NULL;
         }
 
         if (en > 0) {
@@ -278,13 +280,12 @@ static int
 on_connect(memif_conn_handle_t conn, void *private_ctx)
 {
     const int headroom = 128;
-    const int count = 128;
     int qid = 0;
     int memif_err = 0;
 
     VLOG_INFO("memif connected!");
 
-    memif_err = memif_refill_queue(conn, qid, count, headroom);
+    memif_err = memif_refill_queue(conn, qid, -1, headroom);
     if (memif_err != MEMIF_ERR_SUCCESS) {
         VLOG_ERR("memif_refill_queue failed: %s", memif_strerror(memif_err));
     }
@@ -302,16 +303,55 @@ on_disconnect(memif_conn_handle_t conn, void *private_ctx)
     return 0;
 }
 
+static void
+vlog_hex_dump(char *ptr, int size) 
+{
+    struct ds s;
+    int i;
+
+    ds_init(&s);
+
+    for (i = 0; i < size; i++) {
+        ds_put_hex(&s, ptr++, 1);
+    }
+    VLOG_INFO("%s", ds_cstr(&s));
+    ds_destroy(&s);
+}
+
 static int
-on_interrupt(memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
+on_interrupt_master(memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
 {
     struct netdev_memif *dev;
     struct netdev *netdev;
+    int err = MEMIF_ERR_SUCCESS;
+    uint16_t rx = 0, tx = 0;
+    int i, j;
 
     netdev = (struct netdev *)private_ctx;
     dev = netdev_memif_cast(netdev);
 
     VLOG_INFO("memif on_interrupt, name %s qid %d", netdev->name, qid);
+
+    err = memif_rx_burst(conn, qid, dev->rx_bufs, MAX_MEMIF_BUFS, &rx);
+    VLOG_INFO("memif_rx_burst: %d packets", rx);
+
+    if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
+        VLOG_INFO("memif_rx_burst: %s", memif_strerror (err));
+    }
+
+    dev->rx_buf_num += rx;
+    dev->rx_counter += rx;
+
+    for (i = 0; i < rx; i++) {
+        memif_buffer_t *mif_buf;
+
+        mif_buf = dev->rx_bufs + i;
+        char *pkt = (char *)(mif_buf->data);
+        vlog_hex_dump(pkt, 20);
+    }
+
+//    err = memif_refill_queue(conn, qid, rx, 128);
+//    if (
 
     return 0;
 }
@@ -341,7 +381,7 @@ netdev_memif_construct(struct netdev *netdev)
     args.interface_id = 0;
 
     err = memif_create(&dev->handle, &args, on_connect, on_disconnect,
-                       on_interrupt, (void *)netdev);
+                       on_interrupt_master, (void *)netdev);
 
     VLOG_INFO("%s memif_create %d name %s", __func__, err, dev_name);
 
@@ -351,7 +391,20 @@ netdev_memif_construct(struct netdev *netdev)
         ovsthread_once_done(&memif_thread_once);
     }
 
+    dev->index = 0;
+
+    /* Alloc memif buffers. */
+    dev->rx_buf_num = 0;
+    dev->rx_bufs =
+        (memif_buffer_t *) xzalloc(sizeof(memif_buffer_t) * MAX_MEMIF_BUFS);
+    dev->tx_buf_num = 0;
+    dev->tx_bufs =
+        (memif_buffer_t *) xzalloc(sizeof(memif_buffer_t) * MAX_MEMIF_BUFS);
+
+    dev->seq = dev->tx_err_counter = dev->tx_counter = dev->rx_counter = 0;
+
     memif_print_details(netdev);
+
     return 0;
 }
 
