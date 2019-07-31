@@ -1811,8 +1811,8 @@ port_create(const char *devname, const char *type,
     netdev_get_flags(netdev, &flags);
     if (flags & NETDEV_LOOPBACK) {
         VLOG_ERR("%s: cannot add a loopback device", devname);
-        error = EINVAL;
-        goto out;
+//        error = EINVAL;
+//        goto out;
     }
 
     error = netdev_turn_flags_on(netdev, NETDEV_PROMISC, &sf);

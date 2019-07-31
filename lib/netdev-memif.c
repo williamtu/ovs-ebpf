@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <libmemif.h>
 
+#include "dp-packet.h"
 #include "openvswitch/vlog.h"
 #include "netdev-provider.h"
 #include "netdev-memif.h"
@@ -84,12 +85,14 @@ memif_print_details(const struct netdev *netdev)
     char *buf;
     memif_details_t md;
     struct netdev_memif *dev = netdev_memif_cast(netdev);
+return;
+    if (!dev->connected)
+        return;
 
     buflen = 1024;
     buf = xzalloc(buflen);
     VLOG_INFO("==== MEMIF Details ====");
 
-return; // connected!
     memset(&md, 0, sizeof md);
     err = memif_get_details(dev->handle, &md, buf, buflen);
     if (err != MEMIF_ERR_SUCCESS) {
@@ -294,7 +297,7 @@ netdev_memif_dealloc(struct netdev *netdev)
 static int
 on_connect(memif_conn_handle_t conn, void *private_ctx)
 {
-    const int headroom = 128;
+    const int headroom = 0;
     int qid = 0;
     int memif_err = 0;
     struct netdev_memif *dev;
@@ -305,7 +308,7 @@ on_connect(memif_conn_handle_t conn, void *private_ctx)
 
     VLOG_INFO("memif connected!");
 
-    memif_err = memif_refill_queue(conn, qid, -1, headroom);
+    memif_err = memif_refill_queue(conn, qid, -1, 0);
     if (memif_err != MEMIF_ERR_SUCCESS) {
         VLOG_ERR("memif_refill_queue failed: %s", memif_strerror(memif_err));
     }
@@ -364,11 +367,20 @@ netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
     dev->rx_counter += recv;
 
     for (i = 0; i < recv; i++) {
+        struct dp_packet *packet;
         memif_buffer_t *mif_buf;
+        uint32_t len;
+        void *pkt;
 
         mif_buf = dev->rx_bufs + i;
-        char *pkt = (char *)(mif_buf->data);
-        vlog_hex_dump(pkt, 20);
+        pkt = mif_buf->data;
+        len = mif_buf->len;
+        vlog_hex_dump((char *)pkt, 20);
+
+        packet = dp_packet_new(1024);
+        dp_packet_use_memif(packet, pkt, 1024, 0);
+        dp_packet_set_size(packet, len);
+        dp_packet_batch_add(batch, packet);
     }
 
     if (recv > 0)
@@ -409,7 +421,7 @@ on_interrupt_master(memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
         vlog_hex_dump(pkt, 20);
     }
 
-    err = memif_refill_queue(conn, qid, rx, 128);
+    err = memif_refill_queue(conn, qid, rx, 0);
     if (err != MEMIF_ERR_SUCCESS) {
 //        VLOG_INFO();
         dev->rx_buf_num -= rx;
@@ -516,6 +528,12 @@ netdev_memif_rxq_alloc(void)
     struct netdev_rxq_memif *rx = xzalloc(sizeof *rx);
     /* Only support single queue. */
     return &rx->up;
+}
+
+void
+free_memif_buf(struct dp_packet *p)
+{
+    VLOG_INFO("%s", __func__);
 }
 
 static const struct netdev_class memif_class = {

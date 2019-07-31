@@ -74,6 +74,18 @@ dp_packet_use_afxdp(struct dp_packet *b, void *data, size_t allocated,
 
     dp_packet_init__(b, allocated, DPBUF_AFXDP);
 }
+
+void
+dp_packet_use_memif(struct dp_packet *b, void *data, size_t allocated,
+                    size_t headroom)
+{
+    dp_packet_set_base(b, (char *)data - headroom);
+    dp_packet_set_data(b, data);
+    dp_packet_set_size(b, 0);
+
+    dp_packet_init__(b, allocated, DPBUF_MEMIF);
+}
+
 #endif
 
 /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes of
