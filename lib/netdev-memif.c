@@ -358,9 +358,11 @@ netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
 
     qid = rxq->queue_id;
 
-    err = memif_rx_burst(dev->handle, qid, dev->rx_bufs, MAX_MEMIF_BUFS, &recv);
+    err = memif_rx_burst(dev->handle, qid, dev->rx_bufs,
+                         NETDEV_MAX_BURST, &recv);
     if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
         VLOG_INFO_RL(&rl, "memif_rx_burst: %s", memif_strerror(err));
+        // return not MEMIF_ERR_NOBUF means more data in the ring.
     }
 
     dev->rx_buf_num += recv;
@@ -377,15 +379,19 @@ netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
         len = mif_buf->len;
         vlog_hex_dump((char *)pkt, 20);
 
-        packet = dp_packet_new(1024);
-        dp_packet_use_memif(packet, pkt, 1024, 0);
+        packet = dp_packet_clone_data_with_headroom(pkt, len, 256);
         dp_packet_set_size(packet, len);
         dp_packet_batch_add(batch, packet);
     }
 
-    if (recv > 0)
-        VLOG_INFO("memif_rx_burst: %d packets", recv);
+    err = memif_refill_queue(dev->handle, qid, recv, 0);
+    if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
+        VLOG_INFO_RL(&rl, "memif_refill_queue: %s", memif_strerror(err));
+    }
 
+    if (recv > 0) {
+        VLOG_INFO("netdev_memif_rxq_recv: %d packets", recv);
+    }
     return 0;
 }
 

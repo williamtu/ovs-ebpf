@@ -45,7 +45,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
     DPBUF_AFXDP,               /* Buffer data from XDP frame. */
-    DPBUF_MEMIF,               /* Buffer data from memif frame. */
+//    DPBUF_MEMIF,               /* Buffer data from memif frame. */
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
@@ -201,12 +201,12 @@ dp_packet_delete(struct dp_packet *b)
             free_afxdp_buf(b);
             return;
         }
-
+/*
         if (b->source == DPBUF_MEMIF) {
             free_memif_buf(b);
             return;
         }
-
+*/
         dp_packet_uninit(b);
         free(b);
     }
