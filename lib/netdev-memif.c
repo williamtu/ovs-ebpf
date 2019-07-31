@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/epoll.h>
 #include <signal.h>
+#include <stdlib.h>
 
 #include <errno.h>
 #include <libmemif.h>
@@ -13,6 +14,9 @@
 #include "netdev-memif.h"
 #include "ovs-thread.h"
 
+/* make sure this file exists
+#define MEMIF_DEFAULT_SOCKET_PATH "/run/vpp/memif.sock" 
+*/
 VLOG_DEFINE_THIS_MODULE(netdev_memif);
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
@@ -30,6 +34,11 @@ struct memif_thread_data {
     uint64_t packet_num;
     uint8_t ip_addr[4];
     uint8_t hw_daddr[6];
+};
+
+struct netdev_rxq_memif {
+    struct netdev_rxq up;
+    int fd;
 };
 
 struct netdev_memif {
@@ -52,14 +61,19 @@ struct netdev_memif {
     uint64_t t_sec, t_nsec;
 
     struct memif_thread_data thread_data;;
-//    pthread_t thread[MAX_CONNS];
-    long ctx;
+    bool connected;
 };
 
 static struct netdev_memif *
 netdev_memif_cast(const struct netdev *netdev)
 {
     return CONTAINER_OF(netdev, struct netdev_memif, up);
+}
+
+static struct netdev_rxq_memif *
+netdev_rxq_memif_cast(const struct netdev_rxq *rx)
+{
+    return CONTAINER_OF(rx, struct netdev_rxq_memif, up);
 }
 
 static void
@@ -245,6 +259,7 @@ netdev_memif_init(void)
     err = memif_init(control_fd_update, "ovs-memif", NULL, NULL, NULL);
     VLOG_INFO("memif init done, ret = %d", err);
 
+//    err = sysstem("mkdir -p /run/vpp/"); // need /run/vpp/memif.sock
     return err;
 }
 
@@ -282,6 +297,11 @@ on_connect(memif_conn_handle_t conn, void *private_ctx)
     const int headroom = 128;
     int qid = 0;
     int memif_err = 0;
+    struct netdev_memif *dev;
+    struct netdev *netdev;
+
+    netdev = (struct netdev *)private_ctx;
+    dev = netdev_memif_cast(netdev);
 
     VLOG_INFO("memif connected!");
 
@@ -290,6 +310,7 @@ on_connect(memif_conn_handle_t conn, void *private_ctx)
         VLOG_ERR("memif_refill_queue failed: %s", memif_strerror(memif_err));
     }
 
+    dev->connected = true;
 //  enable_log = 1; 
     return 0;
 }
@@ -316,6 +337,44 @@ vlog_hex_dump(char *ptr, int size)
     }
     VLOG_INFO("%s", ds_cstr(&s));
     ds_destroy(&s);
+}
+
+int
+netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
+                      int *qfill)
+{
+    struct netdev_rxq_memif *rx = netdev_rxq_memif_cast(rxq);
+    struct netdev_memif *dev = netdev_memif_cast(rxq->netdev);
+    uint16_t recv = 0;
+    int err, qid;
+    int i;
+
+    if (!dev->connected) {
+        return 0;
+    }
+
+    qid = rxq->queue_id;
+
+    err = memif_rx_burst(dev->handle, qid, dev->rx_bufs, MAX_MEMIF_BUFS, &recv);
+    if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
+        VLOG_INFO_RL(&rl, "memif_rx_burst: %s", memif_strerror(err));
+    }
+
+    dev->rx_buf_num += recv;
+    dev->rx_counter += recv;
+
+    for (i = 0; i < recv; i++) {
+        memif_buffer_t *mif_buf;
+
+        mif_buf = dev->rx_bufs + i;
+        char *pkt = (char *)(mif_buf->data);
+        vlog_hex_dump(pkt, 20);
+    }
+
+    if (recv > 0)
+        VLOG_INFO("memif_rx_burst: %d packets", recv);
+
+    return 0;
 }
 
 static int
@@ -350,8 +409,11 @@ on_interrupt_master(memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
         vlog_hex_dump(pkt, 20);
     }
 
-//    err = memif_refill_queue(conn, qid, rx, 128);
-//    if (
+    err = memif_refill_queue(conn, qid, rx, 128);
+    if (err != MEMIF_ERR_SUCCESS) {
+//        VLOG_INFO();
+        dev->rx_buf_num -= rx;
+    }
 
     return 0;
 }
@@ -381,7 +443,8 @@ netdev_memif_construct(struct netdev *netdev)
     args.interface_id = 0;
 
     err = memif_create(&dev->handle, &args, on_connect, on_disconnect,
-                       on_interrupt_master, (void *)netdev);
+                       NULL, (void *)netdev);
+                       //on_interrupt_master, (void *)netdev);
 
     VLOG_INFO("%s memif_create %d name %s", __func__, err, dev_name);
 
@@ -402,6 +465,7 @@ netdev_memif_construct(struct netdev *netdev)
         (memif_buffer_t *) xzalloc(sizeof(memif_buffer_t) * MAX_MEMIF_BUFS);
 
     dev->seq = dev->tx_err_counter = dev->tx_counter = dev->rx_counter = 0;
+    dev->connected = false;
 
     memif_print_details(netdev);
 
@@ -424,6 +488,36 @@ netdev_memif_get_etheraddr(const struct netdev *netdev, struct eth_addr *mac)
     return 0;
 }
 
+static int
+netdev_memif_rxq_construct(struct netdev_rxq *rxq)
+{
+    struct netdev_rxq_memif *rx = netdev_rxq_memif_cast(rxq);
+    struct netdev_memif *dev = netdev_memif_cast(rxq->netdev);
+
+    VLOG_INFO("%s", __func__);
+
+    /* Set rx-mode to polling. */
+    memif_set_rx_mode(dev->handle, MEMIF_RX_MODE_POLLING, 0);
+
+    return 0;
+}
+
+static void
+netdev_memif_rxq_dealloc(struct netdev_rxq *rxq_)
+{
+    struct netdev_rxq_memif *rx = netdev_rxq_memif_cast(rxq_);
+    /* Only support single queue. */
+    free(rx);
+}
+
+static struct netdev_rxq *
+netdev_memif_rxq_alloc(void)
+{
+    struct netdev_rxq_memif *rx = xzalloc(sizeof *rx);
+    /* Only support single queue. */
+    return &rx->up;
+}
+
 static const struct netdev_class memif_class = {
     .type = "memif",
     .is_pmd = true,
@@ -434,7 +528,10 @@ static const struct netdev_class memif_class = {
     .construct = netdev_memif_construct,
     .update_flags = netdev_memif_update_flags,
     .get_etheraddr = netdev_memif_get_etheraddr,
-//    .rxq_recv = netdev_memif_rxq_recv,
+    .rxq_alloc = netdev_memif_rxq_alloc,
+    .rxq_dealloc = netdev_memif_rxq_dealloc,
+    .rxq_construct = netdev_memif_rxq_construct,
+    .rxq_recv = netdev_memif_rxq_recv,
 };
 
 void
