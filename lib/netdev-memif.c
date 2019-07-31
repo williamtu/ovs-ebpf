@@ -342,6 +342,44 @@ vlog_hex_dump(char *ptr, int size)
     ds_destroy(&s);
 }
 
+static int
+netdev_memif_batch_send(struct netdev *netdev, int qid,
+                        struct dp_packet_batch *batch,
+                        bool concurrent_txq)
+{
+    struct netdev_memif *dev = netdev_memif_cast(netdev);
+    int allocated = 0;
+    struct dp_packet *packet;
+    int tx_count;
+    int merr, i;
+    uint16_t sent;
+
+    tx_count = batch->count;
+    merr = memif_buffer_alloc(dev->handle, qid, dev->tx_bufs,
+                              tx_count, &allocated, 1024);
+    if ((merr != MEMIF_ERR_SUCCESS) && (merr != MEMIF_ERR_NOBUF_RING)) {
+        VLOG_ERR("memif_buffer_alloc: %s", memif_strerror(merr));
+    }
+    dev->tx_buf_num += allocated;
+
+    VLOG_INFO_RL(&rl, "%s: %d", __func__, batch->count);
+
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        char *pkt;
+
+        pkt = (dev->tx_bufs + i)->data;
+        memcpy(pkt, dp_packet_data(packet), dp_packet_size(packet));
+    }
+
+    merr = memif_tx_burst(dev->handle, qid, dev->tx_bufs, dev->tx_buf_num, &sent);
+    if (merr != MEMIF_ERR_SUCCESS) {
+        VLOG_ERR("memif_tx_burst: %s", memif_strerror(merr));
+    }
+
+    dev->tx_buf_num -= sent;
+    dev->tx_counter += sent;
+}
+
 int
 netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
                       int *qfill)
@@ -362,7 +400,6 @@ netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
                          NETDEV_MAX_BURST, &recv);
     if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
         VLOG_INFO_RL(&rl, "memif_rx_burst: %s", memif_strerror(err));
-        // return not MEMIF_ERR_NOBUF means more data in the ring.
     }
 
     dev->rx_buf_num += recv;
@@ -556,6 +593,7 @@ static const struct netdev_class memif_class = {
     .rxq_dealloc = netdev_memif_rxq_dealloc,
     .rxq_construct = netdev_memif_rxq_construct,
     .rxq_recv = netdev_memif_rxq_recv,
+    .send = netdev_memif_batch_send,
 };
 
 void
