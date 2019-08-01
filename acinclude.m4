@@ -238,6 +238,32 @@ AC_DEFUN([OVS_FIND_DEPENDENCY], [
   ])
 ])
 
+dnl OVS_CHECK_LINUX_MEMIF
+dnl
+dnl Check both Linux MEMIF
+AC_DEFUN([OVS_CHECK_LINUX_MEMIF], [
+  AC_ARG_ENABLE([memif],
+                [AC_HELP_STRING([--enable-memif], [Enable MEMIF support])],
+                [], [enable_memif=no])
+  AC_MSG_CHECKING([whether MEMIF is enabled])
+  if test "$enable_memif" != yes; then
+    AC_MSG_RESULT([no])
+    MEMIF_ENABLE=false
+  else
+    AC_MSG_RESULT([yes])
+    MEMIF_ENABLE=true
+
+    AC_CHECK_HEADER([libmemif.h], [],
+      [AC_MSG_ERROR([unable to find libmemif.h for MEMIF support])])
+
+    AC_DEFINE([HAVE_MEMIF], [1],
+              [Define to 1 if MEMIF support is available and enabled.])
+    LIBBPF_LDADD=" -lmemif"
+    AC_SUBST([LIBMEMIF_LDADD])
+  fi
+  AM_CONDITIONAL([HAVE_MEMIF], test "$MEMIF_ENABLE" = true)
+])
+
 dnl OVS_CHECK_LINUX_AF_XDP
 dnl
 dnl Check both Linux kernel AF_XDP and libbpf support

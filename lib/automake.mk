@@ -10,6 +10,7 @@ lib_LTLIBRARIES += lib/libopenvswitch.la
 lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)
 lib_libopenvswitch_la_LIBADD += $(CAPNG_LDADD)
 lib_libopenvswitch_la_LIBADD += $(LIBBPF_LDADD)
+lib_libopenvswitch_la_LIBADD += $(LIBMEMIF_LDADD)
 
 if WIN32
 lib_libopenvswitch_la_LIBADD += ${PTHREAD_LIBS}
@@ -419,7 +420,11 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/netdev-afxdp-pool.c \
 	lib/netdev-afxdp-pool.h \
 	lib/netdev-afxdp.c \
-	lib/netdev-afxdp.h \
+	lib/netdev-afxdp.h
+endif
+
+if HAVE_MEMIF
+lib_libopenvswitch_la_SOURCES += \
 	lib/netdev-memif.c \
 	lib/netdev-memif.h
 endif
