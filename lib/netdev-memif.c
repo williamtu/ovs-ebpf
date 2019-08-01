@@ -1,24 +1,39 @@
-// libmemif support
+/*
+ * Copyright (c) 2019 Nicira, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #include <config.h>
+
 #include <sys/types.h>
 #include <sys/epoll.h>
 #include <signal.h>
 #include <stdlib.h>
-
 #include <errno.h>
 #include <libmemif.h>
 
 #include "dp-packet.h"
-#include "openvswitch/vlog.h"
-#include "openvswitch/types.h"
-#include "openvswitch/compiler.h"
 #include "netdev-provider.h"
 #include "netdev-memif.h"
+#include "openvswitch/compiler.h"
+#include "openvswitch/types.h"
+#include "openvswitch/vlog.h"
 #include "ovs-thread.h"
 
 /* make sure this file exists
-#define MEMIF_DEFAULT_SOCKET_PATH "/run/vpp/memif.sock" 
+    #define MEMIF_DEFAULT_SOCKET_PATH \
+        "/run/vpp/memif.sock"
 */
 VLOG_DEFINE_THIS_MODULE(netdev_memif);
 
@@ -62,7 +77,6 @@ struct netdev_memif {
     uint64_t tx_packets;
     uint64_t tx_bytes;
 
-    uint64_t t_sec, t_nsec;
     bool connected;
     unsigned int ifi_flags;
 };
@@ -176,9 +190,8 @@ control_fd_update(int fd, uint8_t events, void *ctx OVS_UNUSED)
 }
 
 static void *
-memif_thread(void *f_)
+memif_thread(void *f_ OVS_UNUSED)
 {
-    struct netdev *netdev = (struct netdev *)f_;
     struct epoll_event evt;
     uint32_t events;
     struct timespec start, end;
@@ -223,13 +236,11 @@ memif_thread(void *f_)
                 }
 
                 VLOG_INFO_RL(&rl, "valid fd %d", evt.data.fd);
-                memif_print_details(netdev);
             } else {
                 VLOG_ERR_RL(&rl, "unexpected event at memif_epfd. fd %d", evt.data.fd);
             }
         }
         timespec_get(&end, TIME_UTC);
-        VLOG_INFO_RL(&rl, "interrupt: %ld", end.tv_nsec - start.tv_nsec);
     }
     return NULL;
 }
@@ -303,6 +314,8 @@ on_connect(memif_conn_handle_t conn, void *private_ctx)
     }
 
     dev->connected = true;
+    memif_print_details(netdev);
+
     return 0;
 }
 
@@ -321,8 +334,8 @@ on_disconnect(memif_conn_handle_t conn OVS_UNUSED, void *private_ctx)
     return 0;
 }
 
-static void
-vlog_hex_dump(char *ptr, int size) 
+static void OVS_UNUSED
+vlog_hex_dump(char *ptr, int size)
 {
     struct ds s;
     int i;
@@ -496,8 +509,6 @@ netdev_memif_construct(struct netdev *netdev)
 
     dev->seq = 0;
     dev->connected = false;
-
-    memif_print_details(netdev);
 
     if (ovsthread_once_start(&memif_thread_once)) {
         ovs_thread_create("memif_conn", memif_thread, (void *)netdev);
