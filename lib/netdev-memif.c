@@ -11,6 +11,7 @@
 
 #include "dp-packet.h"
 #include "openvswitch/vlog.h"
+#include "openvswitch/types.h"
 #include "openvswitch/compiler.h"
 #include "netdev-provider.h"
 #include "netdev-memif.h"
@@ -23,12 +24,11 @@ VLOG_DEFINE_THIS_MODULE(netdev_memif);
 
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
-#define MAX_MEMIF_BUFS 256  /* Number of buffers on a ring. */
+#define MAX_MEMIF_BUFS  256 /* Number of buffers on a ring. */
 #define MAX_MEMIF_INDEX 16  /* Max Number of memif devices. */
 #define MEMIF_BUF_SIZE  2048
 #define MEMIF_RING_SIZE 11
-
-static int memif_index_id;
+#define MEMIF_HEADROOM  256
 
 static struct ovsthread_once memif_thread_once
     = OVSTHREAD_ONCE_INITIALIZER;
@@ -44,6 +44,7 @@ struct netdev_memif {
     struct netdev up;
 
     uint16_t index;
+    struct eth_addr mac;
     memif_conn_handle_t handle;
 
     /* tx buffers */
@@ -237,7 +238,6 @@ static int
 netdev_memif_init(void)
 {
     int err;
-    pthread_t pt;
 
     epfd = epoll_create(1);
     add_epoll_fd(0, EPOLLIN);
@@ -287,7 +287,6 @@ netdev_memif_dealloc(struct netdev *netdev)
 static int
 on_connect(memif_conn_handle_t conn, void *private_ctx)
 {
-    const int headroom = 0;
     int qid = 0;
     int memif_err = 0;
     struct netdev_memif *dev;
@@ -298,7 +297,7 @@ on_connect(memif_conn_handle_t conn, void *private_ctx)
 
     VLOG_INFO("memif connected!");
 
-    memif_err = memif_refill_queue(conn, qid, -1, 0);
+    memif_err = memif_refill_queue(conn, qid, -1, MEMIF_HEADROOM);
     if (memif_err != MEMIF_ERR_SUCCESS) {
         VLOG_ERR("memif_refill_queue failed: %s", memif_strerror(memif_err));
     }
@@ -308,7 +307,7 @@ on_connect(memif_conn_handle_t conn, void *private_ctx)
 }
 
 static int
-on_disconnect(memif_conn_handle_t conn, void *private_ctx)
+on_disconnect(memif_conn_handle_t conn OVS_UNUSED, void *private_ctx)
 {
     struct netdev_memif *dev;
     struct netdev *netdev;
@@ -317,8 +316,7 @@ on_disconnect(memif_conn_handle_t conn, void *private_ctx)
     dev = netdev_memif_cast(netdev);
 
     dev->connected = false;
-
-    VLOG_INFO("memif disconnected!");
+    VLOG_INFO("%s disconnected!", netdev_get_name(netdev));
 
     return 0;
 }
@@ -341,10 +339,10 @@ vlog_hex_dump(char *ptr, int size)
 static int
 netdev_memif_batch_send(struct netdev *netdev, int qid,
                         struct dp_packet_batch *batch,
-                        bool concurrent_txq)
+                        bool concurrent_txq OVS_UNUSED)
 {
     struct netdev_memif *dev = netdev_memif_cast(netdev);
-    int allocated = 0;
+    uint16_t allocated = 0;
     struct dp_packet *packet;
     int merr, error = 0;
     int tx_count;
@@ -356,7 +354,7 @@ netdev_memif_batch_send(struct netdev *netdev, int qid,
     }
 
     tx_count = batch->count;
-    merr = memif_buffer_alloc(dev->handle, qid, dev->tx_bufs,
+    merr = memif_buffer_alloc(dev->handle, (uint16_t)qid, dev->tx_bufs,
                               tx_count, &allocated, 1024);
     if ((merr != MEMIF_ERR_SUCCESS) && (merr != MEMIF_ERR_NOBUF_RING)) {
         VLOG_ERR("%s: memif_buffer_alloc: %s", netdev_get_name(netdev),
@@ -397,11 +395,10 @@ out:
     return error;
 }
 
-int
+static int
 netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
-                      int *qfill)
+                      int *qfill OVS_UNUSED)
 {
-    struct netdev_rxq_memif *rx = netdev_rxq_memif_cast(rxq);
     struct netdev_memif *dev = netdev_memif_cast(rxq->netdev);
     uint16_t recv = 0;
     int err, qid;
@@ -431,16 +428,17 @@ netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
         mif_buf = dev->rx_bufs + i;
         pkt = mif_buf->data;
         len = mif_buf->len;
-        vlog_hex_dump((char *)pkt, 20);
+        //vlog_hex_dump((char *)pkt, 20);
 
         packet = dp_packet_clone_data_with_headroom(pkt, len, 256);
         dp_packet_set_size(packet, len);
         dp_packet_batch_add(batch, packet);
 
+        VLOG_INFO_RL(&rl, "receive pkt len %d", len);
         dev->rx_bytes += len;
     }
 
-    err = memif_refill_queue(dev->handle, qid, recv, 0);
+    err = memif_refill_queue(dev->handle, qid, recv, MEMIF_HEADROOM);
     if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
         VLOG_INFO_RL(&rl, "memif_refill_queue: %s", memif_strerror(err));
     }
@@ -452,51 +450,12 @@ netdev_memif_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
 }
 
 static int
-on_interrupt_master(memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
-{
-    struct netdev_memif *dev;
-    struct netdev *netdev;
-    int err = MEMIF_ERR_SUCCESS;
-    uint16_t rx = 0, tx = 0;
-    int i, j;
-
-    netdev = (struct netdev *)private_ctx;
-    dev = netdev_memif_cast(netdev);
-
-    VLOG_INFO("memif on_interrupt, name %s qid %d", netdev->name, qid);
-
-    err = memif_rx_burst(conn, qid, dev->rx_bufs, MAX_MEMIF_BUFS, &rx);
-    VLOG_INFO("memif_rx_burst: %d packets", rx);
-
-    if ((err != MEMIF_ERR_SUCCESS) && (err != MEMIF_ERR_NOBUF)) {
-        VLOG_INFO("memif_rx_burst: %s", memif_strerror (err));
-    }
-
-    dev->rx_buf_num += rx;
-
-    for (i = 0; i < rx; i++) {
-        memif_buffer_t *mif_buf;
-
-        mif_buf = dev->rx_bufs + i;
-        char *pkt = (char *)(mif_buf->data);
-        vlog_hex_dump(pkt, 20);
-    }
-
-    err = memif_refill_queue(conn, qid, rx, 0);
-    if (err != MEMIF_ERR_SUCCESS) {
-        dev->rx_buf_num -= rx;
-    }
-
-    return 0;
-}
-
-static int
 netdev_memif_construct(struct netdev *netdev)
 {
     int err;
     struct netdev_memif *dev = netdev_memif_cast(netdev);
-    struct memif_conn *conn;
     const char *dev_name;
+    uint16_t memif_dev_index;
 
     VLOG_INFO("%s", __func__);
 
@@ -515,13 +474,14 @@ netdev_memif_construct(struct netdev *netdev)
     dev_name = netdev_get_name(netdev);
     strncpy((char *)args.interface_name, dev_name, strlen(dev_name));
 
+    ovs_scan(dev_name, "memif%"SCNu16, &memif_dev_index);
+
     /* Interface index. */
-    args.interface_id = dev->index = memif_index_id++;
-    ovs_assert(memif_index_id < MAX_MEMIF_INDEX);
+    dev->index = args.interface_id = memif_dev_index;
+    ovs_assert(memif_dev_index < MAX_MEMIF_INDEX);
 
     err = memif_create(&dev->handle, &args, on_connect, on_disconnect,
                        NULL, (void *)netdev);
-                       //on_interrupt_master, (void *)netdev);
 
     VLOG_INFO("%s memif_create %d name %s index %d",
               __func__, err, dev_name, dev->index);
@@ -567,16 +527,29 @@ netdev_memif_update_flags(struct netdev *netdev,
 }
 
 static int
-netdev_memif_get_etheraddr(const struct netdev *netdev, struct eth_addr *mac)
+netdev_memif_get_etheraddr(const struct netdev *netdev OVS_UNUSED,
+                           struct eth_addr *mac)
 {
-    VLOG_INFO("%s", __func__);
+    struct netdev_memif *dev = netdev_memif_cast(netdev);
+
+    *mac = dev->mac;
+    return 0;
+}
+
+static int
+netdev_memif_set_etheraddr(struct netdev *netdev, const struct eth_addr mac)
+{
+    struct netdev_memif *dev = netdev_memif_cast(netdev);
+
+    VLOG_INFO("set mac "ETH_ADDR_FMT, ETH_ADDR_ARGS(mac));
+    memcpy(&dev->mac, &mac, sizeof mac);
     return 0;
 }
 
 static int
 netdev_memif_rxq_construct(struct netdev_rxq *rxq)
 {
-    struct netdev_rxq_memif *rx = netdev_rxq_memif_cast(rxq);
+    struct netdev_rxq_memif *rx OVS_UNUSED = netdev_rxq_memif_cast(rxq);
     struct netdev_memif *dev = netdev_memif_cast(rxq->netdev);
 
     VLOG_INFO("%s", __func__);
@@ -603,18 +576,11 @@ netdev_memif_rxq_alloc(void)
     return &rx->up;
 }
 
-void
-free_memif_buf(struct dp_packet *p)
-{
-    VLOG_INFO("%s", __func__);
-}
-
 static int
 netdev_memif_get_stats(const struct netdev *netdev,
                        struct netdev_stats *stats)
 {
     struct netdev_memif *dev = netdev_memif_cast(netdev);
-    int error;
 
     // TODO: ovs_mutex_lock(&dev->mutex);
     stats->rx_packets   += dev->rx_packets;
@@ -639,6 +605,7 @@ static const struct netdev_class memif_class = {
     .dealloc = netdev_memif_dealloc,
     .update_flags = netdev_memif_update_flags,
     .get_etheraddr = netdev_memif_get_etheraddr,
+    .set_etheraddr = netdev_memif_set_etheraddr, 
     .rxq_alloc = netdev_memif_rxq_alloc,
     .rxq_dealloc = netdev_memif_rxq_dealloc,
     .rxq_construct = netdev_memif_rxq_construct,
