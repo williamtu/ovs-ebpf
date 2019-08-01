@@ -30,13 +30,6 @@ static struct ovsthread_once memif_thread_once
 
 int epfd;
 
-struct memif_thread_data {
-    uint16_t index;
-    uint64_t packet_num;
-    uint8_t ip_addr[4];
-    uint8_t hw_daddr[6];
-};
-
 struct netdev_rxq_memif {
     struct netdev_rxq up;
     int fd;
@@ -61,8 +54,8 @@ struct netdev_memif {
     uint64_t tx_counter, rx_counter, tx_err_counter;
     uint64_t t_sec, t_nsec;
 
-    struct memif_thread_data thread_data;;
     bool connected;
+    unsigned int ifi_flags;
 };
 
 static struct netdev_memif *
@@ -108,7 +101,7 @@ return;
 }
 
 #define DBG VLOG_INFO
-int
+static int
 add_epoll_fd (int fd, uint32_t events)
 {
   if (fd < 0)
@@ -129,7 +122,7 @@ add_epoll_fd (int fd, uint32_t events)
   return 0;
 }
 
-int
+static int
 mod_epoll_fd (int fd, uint32_t events)
 {
   if (fd < 0)
@@ -150,7 +143,7 @@ mod_epoll_fd (int fd, uint32_t events)
   return 0;
 }
 
-int
+static int
 del_epoll_fd (int fd)
 {
   if (fd < 0)
@@ -169,7 +162,7 @@ del_epoll_fd (int fd)
   return 0;
 }
 
-int
+static int
 control_fd_update (int fd, uint8_t events, void *ctx)
 {
   /* convert memif event definitions to epoll events */
@@ -351,7 +344,7 @@ netdev_memif_batch_send(struct netdev *netdev, int qid,
     int allocated = 0;
     struct dp_packet *packet;
     int tx_count;
-    int merr, i;
+    int merr;
     uint16_t sent;
 
     tx_count = batch->count;
@@ -362,7 +355,7 @@ netdev_memif_batch_send(struct netdev *netdev, int qid,
     }
     dev->tx_buf_num += allocated;
 
-    VLOG_INFO_RL(&rl, "%s: %d", __func__, batch->count);
+    VLOG_INFO_RL(&rl, "%s: %lu", __func__, batch->count);
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
         char *pkt;
@@ -532,7 +525,17 @@ netdev_memif_update_flags(struct netdev *netdev,
                          enum netdev_flags off, enum netdev_flags on,
                          enum netdev_flags *old_flagsp)
 {
-    VLOG_INFO("%s", __func__);
+    struct netdev_memif *dev = netdev_memif_cast(netdev);
+
+    /* Only support NETDEV_UP. */
+    if (on & NETDEV_UP) {
+        dev->ifi_flags |= NETDEV_UP;
+    }
+    if (off & NETDEV_UP) {
+        dev->ifi_flags &= ~NETDEV_UP;
+    }
+
+    *old_flagsp = dev->ifi_flags;
     return 0;
 }
 
