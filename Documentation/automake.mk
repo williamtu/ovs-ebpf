@@ -17,6 +17,7 @@ DOC_SOURCE = \
 	Documentation/intro/install/dpdk.rst \
 	Documentation/intro/install/fedora.rst \
 	Documentation/intro/install/general.rst \
+	Documentation/intro/install/memif.rst \
 	Documentation/intro/install/netbsd.rst \
 	Documentation/intro/install/ovn-upgrades.rst \
 	Documentation/intro/install/rhel.rst \
