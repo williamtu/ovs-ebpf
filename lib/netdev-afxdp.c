@@ -26,6 +26,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/if_xdp.h>
 #include <net/if.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -82,7 +83,7 @@ BUILD_ASSERT_DECL(PROD_NUM_DESCS == CONS_NUM_DESCS);
 #define UMEM2DESC(elem, base) ((uint64_t)((char *)elem - (char *)base))
 
 static struct xsk_socket_info *xsk_configure(int ifindex, int xdp_queue_id,
-                                             int mode);
+                                             int mode, bool use_need_wakeup);
 static void xsk_remove_xdp_program(uint32_t ifindex, int xdpmode);
 static void xsk_destroy(struct xsk_socket_info *xsk);
 static int xsk_configure_all(struct netdev *netdev);
@@ -116,6 +117,49 @@ struct xsk_socket_info {
     uint32_t available_rx;   /* Number of descriptors filled in rx and fq. */
     atomic_uint64_t tx_dropped;
 };
+
+#ifdef HAVE_XDP_NEED_WAKEUP
+static inline void
+xsk_rx_wakeup_if_needed(struct xsk_umem_info *umem,
+                        struct netdev *netdev, int fd)
+{
+    struct pollfd pfd;
+    int ret;
+
+    if (xsk_ring_prod__needs_wakeup(&umem->fq)) {
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+
+        ret = poll(&pfd, 1, 0);
+        if (OVS_UNLIKELY(ret < 0)) {
+            VLOG_WARN_RL(&rl, "%s: error polling rx fd: %s.",
+                         netdev_get_name(netdev),
+                         ovs_strerror(errno));
+        }
+    }
+}
+
+static inline bool
+xsk_tx_need_wakeup(struct xsk_socket_info *xsk_info)
+{
+    return xsk_ring_prod__needs_wakeup(&xsk_info->tx);
+}
+
+#else /* !HAVE_XDP_NEED_WAKEUP */
+static inline void
+xsk_rx_wakeup_if_needed(struct xsk_umem_info *umem OVS_UNUSED,
+                        struct netdev *netdev OVS_UNUSED,
+                        int fd OVS_UNUSED)
+{
+    /* Nothing. */
+}
+
+static inline bool
+xsk_tx_need_wakeup(struct xsk_socket_info *xsk_info OVS_UNUSED)
+{
+    return true;
+}
+#endif /* HAVE_XDP_NEED_WAKEUP */
 
 static void
 netdev_afxdp_cleanup_unused_pool(struct unused_pool *pool)
@@ -234,7 +278,7 @@ xsk_configure_umem(void *buffer, uint64_t size, int xdpmode)
 
 static struct xsk_socket_info *
 xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
-                     uint32_t queue_id, int xdpmode)
+                     uint32_t queue_id, int xdpmode, bool use_need_wakeup)
 {
     struct xsk_socket_config cfg;
     struct xsk_socket_info *xsk;
@@ -255,6 +299,12 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
     } else {
         cfg.bind_flags = XDP_COPY;
         cfg.xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
+    }
+
+    if (use_need_wakeup) {
+#ifdef HAVE_XDP_NEED_WAKEUP
+        cfg.bind_flags |= XDP_USE_NEED_WAKEUP;
+#endif
     }
 
     if (if_indextoname(ifindex, devname) == NULL) {
@@ -311,7 +361,8 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
 }
 
 static struct xsk_socket_info *
-xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
+xsk_configure(int ifindex, int xdp_queue_id, int xdpmode,
+              bool use_need_wakeup)
 {
     struct xsk_socket_info *xsk;
     struct xsk_umem_info *umem;
@@ -334,7 +385,8 @@ xsk_configure(int ifindex, int xdp_queue_id, int xdpmode)
 
     VLOG_DBG("Allocated umem pool at 0x%"PRIxPTR, (uintptr_t) umem);
 
-    xsk = xsk_configure_socket(umem, ifindex, xdp_queue_id, xdpmode);
+    xsk = xsk_configure_socket(umem, ifindex, xdp_queue_id, xdpmode,
+                               use_need_wakeup);
     if (!xsk) {
         /* Clean up umem and xpacket pool. */
         if (xsk_umem__delete(umem->umem)) {
@@ -365,9 +417,12 @@ xsk_configure_all(struct netdev *netdev)
 
     /* Configure each queue. */
     for (i = 0; i < n_rxq; i++) {
-        VLOG_INFO("%s: configure queue %d mode %s", __func__, i,
-                  dev->xdpmode == XDP_COPY ? "SKB" : "DRV");
-        xsk_info = xsk_configure(ifindex, i, dev->xdpmode);
+        VLOG_INFO("%s: configure queue %d mode %s use_need_wakeup %s.",
+                  __func__, i,
+                  dev->xdpmode == XDP_COPY ? "SKB" : "DRV",
+                  dev->use_need_wakeup ? "true" : "false");
+        xsk_info = xsk_configure(ifindex, i, dev->xdpmode,
+                                 dev->use_need_wakeup);
         if (!xsk_info) {
             VLOG_ERR("Failed to create AF_XDP socket on queue %d.", i);
             dev->xsks[i] = NULL;
@@ -459,6 +514,7 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
     struct netdev_linux *dev = netdev_linux_cast(netdev);
     const char *str_xdpmode;
     int xdpmode, new_n_rxq;
+    bool need_wakeup;
 
     ovs_mutex_lock(&dev->mutex);
     new_n_rxq = MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
@@ -481,10 +537,14 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
         return EINVAL;
     }
 
+    need_wakeup = smap_get_bool(args, "use_need_wakeup", true);
+
     if (dev->requested_n_rxq != new_n_rxq
-        || dev->requested_xdpmode != xdpmode) {
+        || dev->requested_xdpmode != xdpmode
+        || dev->requested_need_wakeup != need_wakeup) {
         dev->requested_n_rxq = new_n_rxq;
         dev->requested_xdpmode = xdpmode;
+        dev->requested_need_wakeup = need_wakeup;
         netdev_request_reconfigure(netdev);
     }
     ovs_mutex_unlock(&dev->mutex);
@@ -500,6 +560,8 @@ netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args)
     smap_add_format(args, "n_rxq", "%d", netdev->n_rxq);
     smap_add_format(args, "xdpmode", "%s",
         dev->xdpmode == XDP_ZEROCOPY ? "drv" : "skb");
+    smap_add_format(args, "use_need_wakeup", "%s",
+        dev->use_need_wakeup ? "true" : "false");
     ovs_mutex_unlock(&dev->mutex);
     return 0;
 }
@@ -515,6 +577,7 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
 
     if (netdev->n_rxq == dev->requested_n_rxq
         && dev->xdpmode == dev->requested_xdpmode
+        && dev->use_need_wakeup == dev->requested_need_wakeup
         && dev->xsks) {
         goto out;
     }
@@ -538,6 +601,7 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
          * when no device is in DRV mode.
          */
     }
+    dev->use_need_wakeup = dev->requested_need_wakeup;
 
     err = xsk_configure_all(netdev);
     if (err) {
@@ -660,6 +724,9 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 
     rcvd = xsk_ring_cons__peek(&xsk_info->rx, BATCH_SIZE, &idx_rx);
     if (!rcvd) {
+        if (dev->use_need_wakeup) {
+            xsk_rx_wakeup_if_needed(umem, netdev, rx->fd);
+        }
         return EAGAIN;
     }
 
@@ -704,10 +771,14 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 }
 
 static inline int
-kick_tx(struct xsk_socket_info *xsk_info, int xdpmode)
+kick_tx(struct xsk_socket_info *xsk_info, int xdpmode, bool use_need_wakeup)
 {
     int ret, retries;
     static const int KERNEL_TX_BATCH_SIZE = 16;
+
+    if (use_need_wakeup && !xsk_tx_need_wakeup(xsk_info)) {
+        return 0;
+    }
 
     /* In SKB_MODE packet transmission is synchronous, and the kernel xmits
      * only TX_BATCH_SIZE(16) packets for a single sendmsg syscall.
@@ -876,7 +947,7 @@ __netdev_afxdp_batch_send(struct netdev *netdev, int qid,
         atomic_add_relaxed(&xsk_info->tx_dropped, batch->count, &orig);
         COVERAGE_INC(afxdp_tx_full);
         afxdp_complete_tx(xsk_info);
-        kick_tx(xsk_info, dev->xdpmode);
+        kick_tx(xsk_info, dev->xdpmode, dev->use_need_wakeup);
         error = ENOMEM;
         goto out;
     }
@@ -900,7 +971,7 @@ __netdev_afxdp_batch_send(struct netdev *netdev, int qid,
     xsk_ring_prod__submit(&xsk_info->tx, batch->count);
     xsk_info->outstanding_tx += batch->count;
 
-    ret = kick_tx(xsk_info, dev->xdpmode);
+    ret = kick_tx(xsk_info, dev->xdpmode, dev->use_need_wakeup);
     if (OVS_UNLIKELY(ret)) {
         VLOG_WARN_RL(&rl, "%s: error sending AF_XDP packet: %s.",
                      netdev_get_name(netdev), ovs_strerror(ret));
@@ -970,6 +1041,7 @@ netdev_afxdp_construct(struct netdev *netdev)
 
     dev->requested_n_rxq = NR_QUEUE;
     dev->requested_xdpmode = XDP_COPY;
+    dev->requested_need_wakeup = true;
 
     dev->xsks = NULL;
     dev->tx_locks = NULL;
