@@ -26,6 +26,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/if_xdp.h>
 #include <net/if.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -116,6 +117,48 @@ struct xsk_socket_info {
     uint32_t available_rx;   /* Number of descriptors filled in rx and fq. */
     atomic_uint64_t tx_dropped;
 };
+
+#ifdef HAVE_XDP_NEED_WAKEUP
+static inline void
+xsk_rx_need_wakeup(struct xsk_umem_info *umem,
+                   struct netdev *netdev, int fd) {
+    struct pollfd pfd;
+    int ret;
+
+    if (xsk_ring_prod__needs_wakeup(&umem->fq)) {
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+
+        ret = poll(&pfd, 1, 1000);
+        if (OVS_UNLIKELY(ret == 0)) {
+            VLOG_WARN_RL(&rl, "%s: poll rx fd timeout.",
+                    netdev_get_name(netdev));
+        } else if (OVS_UNLIKELY(ret < 0)) {
+            VLOG_WARN_RL(&rl, "%s: error polling rx fd: %s.",
+                    netdev_get_name(netdev),
+                    ovs_strerror(ret));
+        }
+    }
+}
+
+static inline bool
+xsk_tx_need_wakeup(struct xsk_socket_info *xsk_info)
+{
+    return xsk_ring_prod__needs_wakeup(&xsk_info->tx);
+}
+#else
+static inline void
+xsk_rx_need_wakeup(struct xsk_umem_info *umem OVS_UNUSED,
+                   struct netdev *netdev OVS_UNUSED, int fd OVS_UNUSED) {
+    /* Nothing. */
+}
+
+static inline bool
+xsk_tx_need_wakeup(struct xsk_socket_info *xsk_info OVS_UNUSED)
+{
+    return true;
+}
+#endif /* HAVE_XDP_NEED_WAKEUP */
 
 static void
 netdev_afxdp_cleanup_unused_pool(struct unused_pool *pool)
@@ -256,6 +299,10 @@ xsk_configure_socket(struct xsk_umem_info *umem, uint32_t ifindex,
         cfg.bind_flags = XDP_COPY;
         cfg.xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE;
     }
+
+#ifdef HAVE_XDP_NEED_WAKEUP
+    cfg.bind_flags |= XDP_USE_NEED_WAKEUP;
+#endif
 
     if (if_indextoname(ifindex, devname) == NULL) {
         VLOG_ERR("ifindex %d to devname failed (%s)",
@@ -660,6 +707,7 @@ netdev_afxdp_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
 
     rcvd = xsk_ring_cons__peek(&xsk_info->rx, BATCH_SIZE, &idx_rx);
     if (!rcvd) {
+        xsk_rx_need_wakeup(umem, netdev, rx->fd);
         return EAGAIN;
     }
 
@@ -709,6 +757,9 @@ kick_tx(struct xsk_socket_info *xsk_info, int xdpmode)
     int ret, retries;
     static const int KERNEL_TX_BATCH_SIZE = 16;
 
+    if (!xsk_tx_need_wakeup(xsk_info)) {
+        return 0;
+    }
     /* In SKB_MODE packet transmission is synchronous, and the kernel xmits
      * only TX_BATCH_SIZE(16) packets for a single sendmsg syscall.
      * So, we have to kick the kernel (n_packets / 16) times to be sure that
