@@ -376,6 +376,12 @@ manpage-check: $(man_MANS) $(dist_man_MANS) $(noinst_man_MANS)
 CLEANFILES += manpage-check
 endif
 
+ALL_LOCAL += cargo
+cargo: $(RUST_FILES)
+	cd rust && cargo build
+	$(warning "building RUST")
+.PHONY: cargo
+
 if HAVE_FLAKE8
 ALL_LOCAL += flake8-check
 # http://flake8.readthedocs.org/en/latest/user/error-codes.html
@@ -498,3 +504,4 @@ include windows/automake.mk
 include ovn/automake.mk
 include selinux/automake.mk
 include build-aux/automake.mk
+include rust/automake.mk
