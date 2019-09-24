@@ -378,7 +378,7 @@ endif
 
 ALL_LOCAL += cargo
 cargo: $(RUST_FILES)
-	cd rust && cargo build
+	cd rust && cargo build --release
 	$(warning "building RUST")
 .PHONY: cargo
 
