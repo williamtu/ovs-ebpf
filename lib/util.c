@@ -1866,6 +1866,8 @@ struct scan_spec {
     } type;
 };
 
+extern const char *skip_spaces(const char *s);
+/*
 static const char *
 skip_spaces(const char *s)
 {
@@ -1874,7 +1876,7 @@ skip_spaces(const char *s)
     }
     return s;
 }
-
+*/
 static const char *
 scan_int(const char *s, const struct scan_spec *spec, int base, va_list *args)
 {

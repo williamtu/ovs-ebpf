@@ -12,6 +12,7 @@ SUBDIRS = datapath
 AM_CPPFLAGS = $(SSL_CFLAGS)
 AM_LDFLAGS = $(SSL_LDFLAGS)
 AM_LDFLAGS += $(OVS_LDFLAGS)
+AM_LDFLAGS += -L$(top_srcdir)/rust/target/release
 
 if WIN32
 AM_CPPFLAGS += -I $(top_srcdir)/include/windows
@@ -376,11 +377,10 @@ manpage-check: $(man_MANS) $(dist_man_MANS) $(noinst_man_MANS)
 CLEANFILES += manpage-check
 endif
 
-ALL_LOCAL += cargo
-cargo: $(RUST_FILES)
+ovsrust: $(RUST_FILES)
 	cd rust && cargo build --release
+	cp -f rust/target/release/libovsrust.so /lib/x86_64-linux-gnu/
 	$(warning "building RUST")
-.PHONY: cargo
 
 if HAVE_FLAKE8
 ALL_LOCAL += flake8-check
