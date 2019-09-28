@@ -12,7 +12,7 @@ SUBDIRS = datapath
 AM_CPPFLAGS = $(SSL_CFLAGS)
 AM_LDFLAGS = $(SSL_LDFLAGS)
 AM_LDFLAGS += $(OVS_LDFLAGS)
-AM_LDFLAGS += -L$(top_srcdir)/rust/target/release
+# AM_LDFLAGS += -L$(top_srcdir)/rust/target/release
 
 if WIN32
 AM_CPPFLAGS += -I $(top_srcdir)/include/windows

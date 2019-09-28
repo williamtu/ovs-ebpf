@@ -1,3 +1,4 @@
+#include <config.h>
 #include <stdint.h>
 #include <arpa/inet.h>
 
